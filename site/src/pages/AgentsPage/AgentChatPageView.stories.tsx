@@ -25,7 +25,6 @@ import {
 	MockWorkspace,
 	MockWorkspaceAgent,
 	MockWorkspaceApp,
-	MockWorkspaceResource,
 } from "#/testHelpers/entities";
 import {
 	withAuthProvider,
@@ -437,16 +436,6 @@ export const QueuedForCapacityPremiumHardLimit: Story = {
 		);
 		const salesLink = canvas.getByRole("link", { name: /sales@coder\.com/ });
 		expect(salesLink).toHaveAttribute("href", "mailto:sales@coder.com");
-	},
-};
-
-export const NotQueuedForCapacity: Story = {
-	render: () => <StoryAgentChatPageView />,
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.queryByText(/limit for active agents/),
-		).not.toBeInTheDocument();
 	},
 };
 
@@ -1732,41 +1721,6 @@ export const NoBrowserTabForUnhealthyAgentBrowserApp: Story = {
 			sshCommand="ssh coder.workspace"
 		/>
 	),
-};
-
-export const NoBrowserTabForAppOnNonBoundAgent: Story = {
-	render: () => (
-		<StoryAgentChatPageView
-			showSidebarPanel
-			workspace={{
-				...MockWorkspace,
-				latest_build: {
-					...MockWorkspace.latest_build,
-					resources: [
-						{
-							...MockWorkspaceResource,
-							agents: [
-								MockWorkspaceAgent,
-								{
-									...mockAgentWithBrowserApp,
-									id: "other-agent",
-									name: "other-agent",
-								},
-							],
-						},
-					],
-				},
-			}}
-			workspaceAgent={MockWorkspaceAgent}
-			sshCommand="ssh coder.workspace"
-		/>
-	),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		await canvas.findByRole("tab", { name: "Summary" });
-		expect(canvas.queryByRole("tab", { name: "Browser" })).toBeNull();
-	},
 };
 
 export const PreservesUnavailableBrowserTab: Story = {

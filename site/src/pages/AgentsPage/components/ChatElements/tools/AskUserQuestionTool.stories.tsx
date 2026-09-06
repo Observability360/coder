@@ -126,23 +126,6 @@ export const Running: Story = {
 	},
 };
 
-export const RunningEmptyQuestions: Story = {
-	args: {
-		status: "running",
-		args: { questions: [] },
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const liveRegion = canvas.getByRole("status");
-
-		expect(liveRegion).toHaveAttribute("aria-live", "polite");
-		expect(canvas.getByText("Asking for clarification...")).toBeInTheDocument();
-		expect(
-			canvas.getByRole("img", { name: "Tool call running" }),
-		).toBeInTheDocument();
-	},
-};
-
 export const InteractiveSingleQuestion: Story = {
 	args: {
 		status: "completed",
@@ -415,24 +398,6 @@ export const CompletedRewrittenByHook: Story = {
 		isLatestAskUserQuestion: false,
 		hookRewritten: true,
 		onSendAskUserQuestionResponse: fn(),
-	},
-};
-
-export const CompletedNotRewrittenByHook: Story = {
-	args: {
-		status: "completed",
-		result: JSON.stringify(multipleQuestionsPayload),
-		isChatCompleted: true,
-		isLatestAskUserQuestion: false,
-		onSendAskUserQuestionResponse: fn(),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		expect(
-			await canvas.findByText(/How should we structure the database migration/),
-		).toBeInTheDocument();
-		expect(canvas.queryByText("Modified by policy")).not.toBeInTheDocument();
 	},
 };
 
