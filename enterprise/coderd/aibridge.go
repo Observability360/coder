@@ -795,7 +795,7 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 // @Summary Get AI Gateway spend summary for the deployment
 // @Description Returns deployment-wide AI Gateway spend over the window with per-provider, per-model, and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
 // @Description start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
-// @ID get-ai-gateway-spend-summary
+// @ID get-ai-gateway-spend-summary-for-the-deployment
 // @Security CoderSessionToken
 // @Produce json
 // @Tags Enterprise

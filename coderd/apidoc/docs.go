@@ -886,7 +886,7 @@ const docTemplate = `{
                     "Enterprise"
                 ],
                 "summary": "Get AI Gateway spend summary for the deployment",
-                "operationId": "get-ai-gateway-spend-summary",
+                "operationId": "get-ai-gateway-spend-summary-for-the-deployment",
                 "parameters": [
                     {
                         "type": "string",
