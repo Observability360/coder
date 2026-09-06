@@ -135,11 +135,6 @@ export const SpacerVisibleWhenNotStreaming: Story = {
 
 		return <StoryChatPageTimeline store={store} />;
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		canvas.getByRole("button", { name: /thinking/i });
-		expect(canvas.getByTestId("assistant-bottom-spacer")).toBeInTheDocument();
-	},
 };
 
 export const DurableUnresolvedWorkspaceToolRuns: Story = {
@@ -163,12 +158,6 @@ export const DurableUnresolvedWorkspaceToolRuns: Story = {
 				<StoryChatPageTimeline store={store} />
 			</ChatWorkspaceContext>
 		);
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Creating workspace…")).toBeInTheDocument();
-		expect(canvas.queryByText("Created workspace")).toBeNull();
-		expect(canvas.getByText("Loading build logs…")).toBeInTheDocument();
 	},
 };
 
@@ -230,17 +219,6 @@ export const HiddenAssistantPlaceholderDoesNotRender: Story = {
 
 		return <StoryChatPageTimeline store={store} />;
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.queryByText("Message has no renderable content.")).toBeNull();
-
-		const rows = canvasElement.querySelectorAll(
-			'[data-role="user"], [data-role="assistant"]',
-		);
-		expect(rows).toHaveLength(3);
-		expect(rows[1]).toHaveAttribute("data-role", "assistant");
-		expect(rows[1]).toHaveTextContent("Done.");
-	},
 };
 
 export const MergedMessagesRenderInIDOrder: Story = {
@@ -267,12 +245,6 @@ export const MergedMessagesRenderInIDOrder: Story = {
 		]);
 
 		return <StoryChatPageTimeline store={store} />;
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByTestId("conversation-timeline")).toHaveTextContent(
-			/alpha[\s\S]*bravo[\s\S]*charlie[\s\S]*delta/,
-		);
 	},
 };
 

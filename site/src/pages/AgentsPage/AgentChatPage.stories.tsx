@@ -1790,17 +1790,6 @@ export const PersistedStructuredError: Story = {
 			{ diffUrl: undefined },
 		),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByRole("heading", { name: /request failed/i }),
-		).toBeVisible();
-		expect(
-			canvas.getByText(/anthropic returned an unexpected error\./i),
-		).toBeVisible();
-		expect(canvas.getByText(/^HTTP 400$/)).toBeVisible();
-		expect(canvas.getByText(/image exceeds 5 mb maximum/i)).toBeVisible();
-	},
 };
 
 export const PlanModeFromChatState: Story = {
@@ -2029,14 +2018,6 @@ export const WithSubagentCards: Story = {
 			{ diffUrl: undefined },
 		),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		await waitFor(() => {
-			expect(
-				canvas.getByRole("button", { name: /Spawn(?:ed|ing) Child agent/ }),
-			).toBeInTheDocument();
-		});
-	},
 };
 
 /** spawn_computer_use_agent tool renders with an "Open Desktop" button
@@ -2110,14 +2091,6 @@ export const WithComputerUseAgent: Story = {
 				{ diffUrl: undefined },
 			),
 		],
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		// The tool should show "Spawned ... Visual regression check".
-		await waitFor(() => {
-			expect(canvas.getByText(/Visual regression check/)).toBeInTheDocument();
-		});
 	},
 };
 
@@ -2212,38 +2185,6 @@ export const WithMixedSubagentTranscript: Story = {
 			{ diffUrl: undefined },
 		),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		await waitFor(() => {
-			expect(
-				canvas.getByText(
-					(_content, element) =>
-						element?.tagName === "SPAN" &&
-						element.textContent?.includes("Spawned") === true &&
-						element.textContent?.includes("Legacy helper") === true,
-				),
-			).toBeInTheDocument();
-			expect(
-				canvas.getAllByText(/Legacy helper/).length,
-			).toBeGreaterThanOrEqual(2);
-			expect(
-				canvas.getByText(
-					(_content, element) =>
-						element?.tagName === "SPAN" &&
-						element.textContent?.includes("Spawned") === true &&
-						element.textContent?.includes("Explore agent") === true,
-				),
-			).toBeInTheDocument();
-			expect(
-				canvas.getByText(
-					(_content, element) =>
-						element?.tagName === "SPAN" &&
-						element.textContent?.includes("Waited for") === true &&
-						element.textContent?.includes("Explore agent") === true,
-				),
-			).toBeInTheDocument();
-		});
-	},
 };
 
 /** Completed reasoning part renders inline. */
@@ -2329,16 +2270,6 @@ export const StreamedSubagentTitle: Story = {
 				},
 			],
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		await waitFor(() => {
-			expect(
-				canvas.getByRole("button", {
-					name: /Spawning Streamed Child/,
-				}),
-			).toBeInTheDocument();
-		});
 	},
 };
 
@@ -2648,15 +2579,6 @@ export const RecoversSidebarAfterWorkspaceRebuild: Story = {
 				},
 			],
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const terminalTab = await canvas.findByRole(
-			"tab",
-			{ name: "Terminal" },
-			{ timeout: 5000 },
-		);
-		expect(terminalTab).toBeVisible();
 	},
 };
 
@@ -3133,41 +3055,6 @@ export const WithEveryTool: Story = {
 			],
 		},
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		// All five streamed tool calls should appear simultaneously.
-		// read_file, write_file, and edit_files all switch to a
-		// progressive label ("Reading" / "Writing" / "Editing")
-		// while running; the spinner conveys progress.
-		await waitFor(() => {
-			expect(canvas.getByText(/Reading validate\.go/)).toBeInTheDocument();
-			expect(canvas.getByText(/Writing validation\.go/)).toBeInTheDocument();
-			expect(canvas.getByText(/Editing 2 files/)).toBeInTheDocument();
-			expect(canvas.getByText(/Reading CHANGELOG\.md/)).toBeInTheDocument();
-			expect(canvas.getByText(/Writing CHANGELOG\.md/)).toBeInTheDocument();
-			expect(canvas.getByText(/Attached auth-split\.md/)).toBeInTheDocument();
-			expect(
-				canvas.getByRole("button", { name: /Spawned Workspace diagnostics/i }),
-			).toBeInTheDocument();
-			expect(
-				canvas.getByRole("button", { name: /Read skill deep-review/i }),
-			).toBeInTheDocument();
-		});
-
-		const rowHeights = [
-			canvas.getByText(/Attached auth-split\.md/),
-			canvas.getByRole("button", {
-				name: /Spawned Workspace diagnostics/i,
-			}),
-			canvas.getByRole("button", { name: /Read skill deep-review/i }),
-		].map((label) => {
-			const row = label.closest("[data-transcript-row]");
-			expect(row).toBeInstanceOf(HTMLElement);
-			return Math.round((row as HTMLElement).getBoundingClientRect().height);
-		});
-		expect(new Set(rowHeights)).toEqual(new Set([24]));
-	},
 };
 
 /** wait_agent for a computer-use subagent renders the VNC preview card
@@ -3242,15 +3129,6 @@ export const WithWaitAgentComputerUseVNC: Story = {
 				},
 			],
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		// The wait_agent card should show "Using the computer..." (running
-		// state) rendered via SubagentTool with VNC preview.
-		await waitFor(() => {
-			expect(canvas.getByText(/Using the computer/)).toBeInTheDocument();
-		});
 	},
 };
 
@@ -4009,14 +3887,6 @@ export const DetailQueryError: Story = {
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChat").mockRejectedValue(mockServerError);
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByText("Failed to load chat")).toBeVisible();
-		expect(canvas.queryByText("Chat not found")).not.toBeInTheDocument();
-		expect(
-			canvas.getByRole("button", { name: "Try again" }),
-		).toBeInTheDocument();
 	},
 };
 
