@@ -1310,10 +1310,13 @@ type sqlcQuerier interface {
 	//     is the number of requests with at least one usage whose cost_micros
 	//     is NULL; the tu.id guard keeps the unmatched LEFT JOIN side from
 	//     reading as unpriced usage.
-	//   * A session is a distinct session_id. Client is COALESCE(client, 'Unknown').
+	//   * A session is a distinct (initiator_id, session_id) pair.
+	//     Client is COALESCE(client, 'Unknown').
+	//   * A zero user_id includes every user in summary and breakdown queries.
 	ListAIBridgeSpendByUser(ctx context.Context, arg ListAIBridgeSpendByUserParams) ([]ListAIBridgeSpendByUserRow, error)
 	ListAIBridgeSpendByUserClient(ctx context.Context, arg ListAIBridgeSpendByUserClientParams) ([]ListAIBridgeSpendByUserClientRow, error)
 	ListAIBridgeSpendByUserModel(ctx context.Context, arg ListAIBridgeSpendByUserModelParams) ([]ListAIBridgeSpendByUserModelRow, error)
+	ListAIBridgeSpendByUserProvider(ctx context.Context, arg ListAIBridgeSpendByUserProviderParams) ([]ListAIBridgeSpendByUserProviderRow, error)
 	ListAIBridgeTokenUsagesByInterceptionIDs(ctx context.Context, interceptionIds []uuid.UUID) ([]AIBridgeTokenUsage, error)
 	ListAIBridgeToolUsagesByInterceptionIDs(ctx context.Context, interceptionIds []uuid.UUID) ([]AIBridgeToolUsage, error)
 	ListAIBridgeUserPromptsByInterceptionIDs(ctx context.Context, interceptionIds []uuid.UUID) ([]AIBridgeUserPrompt, error)

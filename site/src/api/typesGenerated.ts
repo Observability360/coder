@@ -354,15 +354,14 @@ export const AIGatewayKeyHeader = "X-Coder-AI-Governance-Gateway-Key";
 
 // From codersdk/aibridge.go
 /**
- * AIGatewaySpendBreakdownLimit caps ByModel and ByClient in an
- * AIGatewaySpendUserSummary. Model and client are request-supplied text, so
- * the number of distinct values is otherwise unbounded.
+ * AIGatewaySpendBreakdownLimit caps the breakdowns in an AI Gateway spend
+ * summary. Request-supplied dimensions otherwise have unbounded cardinality.
  */
 export const AIGatewaySpendBreakdownLimit = 100;
 
 // From codersdk/aibridge.go
 /**
- * AIGatewaySpendClientBreakdown is one user's spend through a single client.
+ * AIGatewaySpendClientBreakdown is spend through a single client.
  */
 export interface AIGatewaySpendClientBreakdown extends AIGatewaySpendTotals {
 	readonly client: string;
@@ -370,13 +369,52 @@ export interface AIGatewaySpendClientBreakdown extends AIGatewaySpendTotals {
 
 // From codersdk/aibridge.go
 /**
- * AIGatewaySpendModelBreakdown is one user's spend on a single model.
+ * AIGatewaySpendModelBreakdown is spend on a single model.
  */
 export interface AIGatewaySpendModelBreakdown extends AIGatewaySpendUsage {
 	readonly provider: string;
 	readonly provider_name: string;
 	readonly model: string;
 }
+
+// From codersdk/aibridge.go
+/**
+ * AIGatewaySpendProviderBreakdown is spend through a single provider.
+ */
+export interface AIGatewaySpendProviderBreakdown extends AIGatewaySpendUsage {
+	readonly provider: string;
+	readonly provider_name: string;
+}
+
+export const AIGatewaySpendSortBies: AIGatewaySpendSortBy[] = [
+	"cache_read_input_tokens",
+	"cache_write_input_tokens",
+	"input_tokens",
+	"output_tokens",
+	"request_count",
+	"session_count",
+	"total_cost_micros",
+	"username",
+];
+
+// From codersdk/aibridge.go
+export type AIGatewaySpendSortBy =
+	| "cache_read_input_tokens"
+	| "cache_write_input_tokens"
+	| "input_tokens"
+	| "output_tokens"
+	| "request_count"
+	| "session_count"
+	| "total_cost_micros"
+	| "username";
+
+// From codersdk/aibridge.go
+export type AIGatewaySpendSortOrder = "asc" | "desc";
+
+export const AIGatewaySpendSortOrders: AIGatewaySpendSortOrder[] = [
+	"asc",
+	"desc",
+];
 
 // From codersdk/aibridge.go
 /**
@@ -412,18 +450,18 @@ export interface AIGatewaySpendUser extends MinimalUser, AIGatewaySpendTotals {}
 
 // From codersdk/aibridge.go
 /**
- * AIGatewaySpendUserSummary is one user's AI Gateway spend over the requested
- * window, broken down by model and by client. The breakdowns hold the most
- * expensive AIGatewaySpendBreakdownLimit entries; the totals cover every
- * request.
+ * AIGatewaySpendUserSummary is AI Gateway spend, optionally scoped to one user.
+ * Each breakdown holds the AIGatewaySpendBreakdownLimit most expensive entries;
+ * totals cover every request in the window.
  */
 export interface AIGatewaySpendUserSummary extends AIGatewaySpendTotals {
 	readonly start_date: string;
 	readonly end_date: string;
 	/**
-	 * ModelCount and ClientCount are the distinct models and clients in the
-	 * window, so callers can tell when a breakdown was truncated.
+	 * Counts include all distinct values, including truncated entries.
 	 */
+	readonly provider_count: number;
+	readonly by_provider: readonly AIGatewaySpendProviderBreakdown[];
 	readonly model_count: number;
 	readonly client_count: number;
 	readonly by_model: readonly AIGatewaySpendModelBreakdown[];
@@ -436,6 +474,11 @@ export interface AIGatewaySpendUserSummary extends AIGatewaySpendTotals {
  * list is offset paginated only; it has no cursor.
  */
 export interface AIGatewaySpendUsersFilter extends AIGatewaySpendWindow {
+	/**
+	 * Sorting defaults to total_cost_micros descending.
+	 */
+	readonly sort_by?: AIGatewaySpendSortBy;
+	readonly sort_order?: AIGatewaySpendSortOrder;
 	/**
 	 * Search matches the username or display name, case-insensitively.
 	 */
@@ -452,8 +495,8 @@ export interface AIGatewaySpendUsersFilter extends AIGatewaySpendWindow {
 
 // From codersdk/aibridge.go
 /**
- * AIGatewaySpendUsersResponse lists per-user AI Gateway spend, most expensive
- * first. Count is the total number of users with requests in the window.
+ * AIGatewaySpendUsersResponse lists per-user AI Gateway spend.
+ * Count is the total number of users with requests in the window.
  */
 export interface AIGatewaySpendUsersResponse {
 	readonly start_date: string;

@@ -7115,6 +7115,12 @@ func (s *MethodTestSuite) TestAIBridge() {
 		check.Args(params).Asserts(rbac.ResourceAibridgeInterception, policy.ActionRead).Returns([]database.ListAIBridgeSpendByUserModelRow{})
 	}))
 
+	s.Run("ListAIBridgeSpendByUserProvider", s.Mocked(func(db *dbmock.MockStore, faker *gofakeit.Faker, check *expects) {
+		params := database.ListAIBridgeSpendByUserProviderParams{UserID: uuid.New()}
+		db.EXPECT().ListAIBridgeSpendByUserProvider(gomock.Any(), params).Return([]database.ListAIBridgeSpendByUserProviderRow{}, nil).AnyTimes()
+		check.Args(params).Asserts(rbac.ResourceAibridgeInterception, policy.ActionRead).Returns([]database.ListAIBridgeSpendByUserProviderRow{})
+	}))
+
 	s.Run("ListAIBridgeSpendByUserClient", s.Mocked(func(db *dbmock.MockStore, faker *gofakeit.Faker, check *expects) {
 		params := database.ListAIBridgeSpendByUserClientParams{UserID: uuid.New()}
 		db.EXPECT().ListAIBridgeSpendByUserClient(gomock.Any(), params).Return([]database.ListAIBridgeSpendByUserClientRow{}, nil).AnyTimes()

@@ -1391,6 +1391,11 @@ func TestAIGatewaySpend(t *testing.T) {
 		_, err = client.AIGatewaySpendUserSummary(ctx, codersdk.Me, codersdk.AIGatewaySpendWindow{})
 		require.ErrorAs(t, err, &sdkErr)
 		require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
+
+		//nolint:gocritic // Owner role is irrelevant here.
+		_, err = client.AIGatewaySpendSummary(ctx, codersdk.AIGatewaySpendWindow{})
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
 	})
 
 	t.Run("MemberForbidden", func(t *testing.T) {
@@ -1405,6 +1410,10 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
 
 		_, err = memberClient.AIGatewaySpendUserSummary(ctx, codersdk.Me, codersdk.AIGatewaySpendWindow{})
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
+
+		_, err = memberClient.AIGatewaySpendSummary(ctx, codersdk.AIGatewaySpendWindow{})
 		require.ErrorAs(t, err, &sdkErr)
 		require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
 	})
@@ -1441,6 +1450,22 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.NoError(t, err)
 		defer res.Body.Close()
 		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	})
+
+	t.Run("InvalidSort", func(t *testing.T) {
+		t.Parallel()
+		client, _ := coderdenttest.New(t, aibridgeOpts(t))
+		ctx := testutil.Context(t, testutil.WaitLong)
+		for _, field := range []string{"sort_by", "sort_order"} {
+			res, err := client.Request(ctx, http.MethodGet, "/api/v2/ai-gateway/spend/users?"+field+"=invalid", nil)
+			require.NoError(t, err)
+			var sdkErr *codersdk.Error
+			require.ErrorAs(t, codersdk.ReadBodyAsError(res), &sdkErr)
+			require.NoError(t, res.Body.Close())
+			require.Equal(t, http.StatusBadRequest, sdkErr.StatusCode())
+			require.Len(t, sdkErr.Validations, 1)
+			require.Equal(t, field, sdkErr.Validations[0].Field)
+		}
 	})
 
 	t.Run("WindowClampedToRetention", func(t *testing.T) {
@@ -1494,6 +1519,11 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.True(t, retentionStart.Equal(summary.StartDate))
 		require.EqualValues(t, 1000, summary.TotalCostMicros)
 
+		//nolint:gocritic // Owner role is irrelevant here.
+		global, err := client.AIGatewaySpendSummary(ctx, window)
+		require.NoError(t, err)
+		require.Equal(t, summary, global)
+
 		// The default window also starts at the boundary.
 		//nolint:gocritic // Owner role is irrelevant here.
 		defaulted, err := client.AIGatewaySpendUsers(ctx, codersdk.AIGatewaySpendUsersFilter{})
@@ -1512,6 +1542,17 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, stale.EndDate.Equal(stale.StartDate))
 		require.Empty(t, stale.Users)
+
+		//nolint:gocritic // Owner role is irrelevant here.
+		empty, err := client.AIGatewaySpendSummary(ctx, codersdk.AIGatewaySpendWindow{
+			StartDate: retentionStart.Add(-48 * time.Hour), EndDate: retentionStart.Add(-24 * time.Hour),
+		})
+		require.NoError(t, err)
+		require.True(t, empty.StartDate.Equal(empty.EndDate))
+		require.Equal(t, codersdk.AIGatewaySpendTotals{}, empty.AIGatewaySpendTotals)
+		require.Empty(t, empty.ByProvider)
+		require.Empty(t, empty.ByModel)
+		require.Empty(t, empty.ByClient)
 	})
 
 	t.Run("BreakdownsCapped", func(t *testing.T) {
@@ -1527,11 +1568,12 @@ func TestAIGatewaySpend(t *testing.T) {
 			startedAt := start.Add(time.Duration(i) * time.Second)
 			endedAt := startedAt.Add(time.Second)
 			intc := dbgen.AIBridgeInterception(t, db, database.InsertAIBridgeInterceptionParams{
-				InitiatorID: firstUser.UserID,
-				Provider:    "openai",
-				Model:       fmt.Sprintf("model-%03d", i),
-				StartedAt:   startedAt,
-				Client:      sql.NullString{String: fmt.Sprintf("client-%03d", i), Valid: true},
+				InitiatorID:  firstUser.UserID,
+				Provider:     "openai",
+				ProviderName: fmt.Sprintf("provider-%03d", i),
+				Model:        fmt.Sprintf("model-%03d", i),
+				StartedAt:    startedAt,
+				Client:       sql.NullString{String: fmt.Sprintf("client-%03d", i), Valid: true},
 			}, &endedAt)
 			dbgen.AIBridgeTokenUsage(t, db, database.InsertAIBridgeTokenUsageParams{
 				InterceptionID: intc.ID,
@@ -1552,6 +1594,15 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.Equal(t, "model-001", summary.ByModel[len(summary.ByModel)-1].Model)
 		require.Len(t, summary.ByClient, codersdk.AIGatewaySpendBreakdownLimit)
 		require.Equal(t, fmt.Sprintf("client-%03d", total-1), summary.ByClient[0].Client)
+		require.EqualValues(t, total, summary.ProviderCount)
+		require.Len(t, summary.ByProvider, codersdk.AIGatewaySpendBreakdownLimit)
+		require.Equal(t, fmt.Sprintf("provider-%03d", total-1), summary.ByProvider[0].ProviderName)
+		require.Equal(t, "provider-001", summary.ByProvider[len(summary.ByProvider)-1].ProviderName)
+		require.EqualValues(t, total*(total+1)/2, summary.TotalCostMicros)
+		//nolint:gocritic // Owner role is irrelevant here.
+		global, err := client.AIGatewaySpendSummary(ctx, codersdk.AIGatewaySpendWindow{StartDate: start, EndDate: start.Add(time.Hour)})
+		require.NoError(t, err)
+		require.Equal(t, summary, global)
 	})
 
 	t.Run("OK", func(t *testing.T) {
@@ -1622,10 +1673,10 @@ func TestAIGatewaySpend(t *testing.T) {
 			InitiatorID:     bob.ID,
 			Provider:        "openai",
 			ProviderName:    "openai-main",
-			Model:           "gpt-4",
+			Model:           "gpt-5",
 			StartedAt:       start,
 			Client:          sql.NullString{String: string(aiblib.ClientCursor), Valid: true},
-			ClientSessionID: sql.NullString{String: "sess-b1", Valid: true},
+			ClientSessionID: sql.NullString{String: "sess-a1", Valid: true},
 		}, finished(start))
 		usage(b1.ID, priced(3000), 300, 100)
 
@@ -1663,6 +1714,32 @@ func TestAIGatewaySpend(t *testing.T) {
 		}
 		require.Equal(t, alice.ID, res.Users[1].ID)
 		require.Equal(t, aliceTotals, res.Users[1].AIGatewaySpendTotals)
+
+		for _, sortBy := range []codersdk.AIGatewaySpendSortBy{codersdk.AIGatewaySpendSortByUsername, codersdk.AIGatewaySpendSortByTotalCostMicros} {
+			for _, order := range []codersdk.AIGatewaySpendSortOrder{codersdk.AIGatewaySpendSortOrderAsc, codersdk.AIGatewaySpendSortOrderDesc} {
+				t.Run(string(sortBy)+"/"+string(order), func(t *testing.T) {
+					t.Parallel()
+					ctx := testutil.Context(t, testutil.WaitLong)
+					want := []uuid.UUID{alice.ID, bob.ID}
+					if sortBy == codersdk.AIGatewaySpendSortByUsername && alice.Username > bob.Username {
+						want[0], want[1] = want[1], want[0]
+					}
+					if order == codersdk.AIGatewaySpendSortOrderDesc {
+						want[0], want[1] = want[1], want[0]
+					}
+					for offset, id := range want {
+						//nolint:gocritic // Owner role is irrelevant here.
+						page, err := client.AIGatewaySpendUsers(ctx, codersdk.AIGatewaySpendUsersFilter{
+							AIGatewaySpendWindow: window, SortBy: sortBy, SortOrder: order, Limit: 1, Offset: offset,
+						})
+						require.NoError(t, err)
+						require.EqualValues(t, 2, page.Count)
+						require.Len(t, page.Users, 1)
+						require.Equal(t, id, page.Users[0].ID)
+					}
+				})
+			}
+		}
 
 		// Search narrows to the matching user; pagination reports the full count.
 		//nolint:gocritic // Owner role is irrelevant here.
@@ -1712,6 +1789,11 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.True(t, start.Equal(summary.StartDate))
 		require.True(t, end.Equal(summary.EndDate))
 		require.Equal(t, aliceTotals, summary.AIGatewaySpendTotals)
+		require.EqualValues(t, 2, summary.ProviderCount)
+		require.Equal(t, []codersdk.AIGatewaySpendProviderBreakdown{
+			{Provider: "anthropic", ProviderName: "anthropic-main", AIGatewaySpendUsage: codersdk.AIGatewaySpendUsage{TotalCostMicros: 1000, RequestCount: 2, InputTokens: 100, OutputTokens: 50}},
+			{Provider: "openai", ProviderName: "openai-main", AIGatewaySpendUsage: codersdk.AIGatewaySpendUsage{TotalCostMicros: 200, RequestCount: 1, UnpricedRequestCount: 1, InputTokens: 35, OutputTokens: 20}},
+		}, summary.ByProvider)
 		require.EqualValues(t, 2, summary.ModelCount)
 		require.EqualValues(t, 3, summary.ClientCount)
 		require.Equal(t, []codersdk.AIGatewaySpendModelBreakdown{
@@ -1756,6 +1838,31 @@ func TestAIGatewaySpend(t *testing.T) {
 			},
 		}, summary.ByClient)
 
+		//nolint:gocritic // Owner role is irrelevant here.
+		global, err := client.AIGatewaySpendSummary(ctx, window)
+		require.NoError(t, err)
+		require.True(t, start.Equal(global.StartDate))
+		require.True(t, end.Equal(global.EndDate))
+		require.Equal(t, codersdk.AIGatewaySpendTotals{
+			AIGatewaySpendUsage: codersdk.AIGatewaySpendUsage{TotalCostMicros: 4200, RequestCount: 4, UnpricedRequestCount: 1, InputTokens: 435, OutputTokens: 170},
+			SessionCount:        3,
+		}, global.AIGatewaySpendTotals)
+		require.EqualValues(t, 2, global.ProviderCount)
+		require.EqualValues(t, 3, global.ModelCount)
+		require.EqualValues(t, 3, global.ClientCount)
+		require.Equal(t, []codersdk.AIGatewaySpendProviderBreakdown{
+			{Provider: "openai", ProviderName: "openai-main", AIGatewaySpendUsage: codersdk.AIGatewaySpendUsage{TotalCostMicros: 3200, RequestCount: 2, UnpricedRequestCount: 1, InputTokens: 335, OutputTokens: 120}},
+			summary.ByProvider[0],
+		}, global.ByProvider)
+		require.Equal(t, []codersdk.AIGatewaySpendModelBreakdown{
+			{Provider: "openai", ProviderName: "openai-main", Model: "gpt-5", AIGatewaySpendUsage: res.Users[0].AIGatewaySpendUsage},
+			summary.ByModel[0], summary.ByModel[1],
+		}, global.ByModel)
+		require.Equal(t, []codersdk.AIGatewaySpendClientBreakdown{
+			{Client: string(aiblib.ClientCursor), AIGatewaySpendTotals: codersdk.AIGatewaySpendTotals{AIGatewaySpendUsage: global.ByProvider[0].AIGatewaySpendUsage, SessionCount: 2}},
+			summary.ByClient[0], summary.ByClient[2],
+		}, global.ByClient)
+
 		// A user without requests gets zero totals and empty breakdowns.
 		//nolint:gocritic // Owner role is irrelevant here.
 		none, err := client.AIGatewaySpendUserSummary(ctx, codersdk.Me, window)
@@ -1765,6 +1872,9 @@ func TestAIGatewaySpend(t *testing.T) {
 		require.Zero(t, none.ClientCount)
 		require.Empty(t, none.ByModel)
 		require.Empty(t, none.ByClient)
+		require.Zero(t, none.ProviderCount)
+		require.NotNil(t, none.ByProvider)
+		require.Empty(t, none.ByProvider)
 	})
 }
 

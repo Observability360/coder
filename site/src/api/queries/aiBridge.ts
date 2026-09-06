@@ -3,6 +3,7 @@ import { API } from "#/api/api";
 import type {
 	AIBridgeListSessionsResponse,
 	AIBridgeSessionThreadsResponse,
+	AIGatewaySpendUsersFilter,
 	AIGatewaySpendUsersResponse,
 	AIGatewaySpendWindow,
 } from "#/api/typesGenerated";
@@ -29,9 +30,10 @@ export const paginatedSessions = (
 	};
 };
 
-interface PaginatedAIGatewaySpendUsersPayload extends AIGatewaySpendWindow {
-	search: string;
-}
+type PaginatedAIGatewaySpendUsersPayload = Omit<
+	AIGatewaySpendUsersFilter,
+	"limit" | "offset"
+>;
 
 export const paginatedAIGatewaySpendUsers = (
 	payload: PaginatedAIGatewaySpendUsersPayload,
@@ -48,12 +50,20 @@ export const paginatedAIGatewaySpendUsers = (
 				start_date: payload.start_date,
 				end_date: payload.end_date,
 				search: payload.search || undefined,
+				sort_by: payload.sort_by,
+				sort_order: payload.sort_order,
 				limit,
 				offset,
 			}),
 		staleTime: 60_000,
 	};
 };
+
+export const aiGatewaySpendSummary = (params: AIGatewaySpendWindow) => ({
+	queryKey: ["aiGatewaySpendSummary", params] as const,
+	queryFn: () => API.getAIGatewaySpendSummary(params),
+	staleTime: 60_000,
+});
 
 export const aiGatewaySpendUserSummary = (
 	user: string,

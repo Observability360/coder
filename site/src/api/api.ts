@@ -3096,6 +3096,18 @@ class ApiMethods {
 		return response.data;
 	};
 
+	getAIGatewaySpendSummary = async (
+		params: TypesGen.AIGatewaySpendWindow,
+	): Promise<TypesGen.AIGatewaySpendUserSummary> => {
+		const url = getURLWithSearchParams(
+			`${aiGatewayPath}/spend/summary`,
+			params,
+		);
+		const response =
+			await this.axios.get<TypesGen.AIGatewaySpendUserSummary>(url);
+		return response.data;
+	};
+
 	getAIGatewaySpendUserSummary = async (
 		user: string,
 		params: TypesGen.AIGatewaySpendWindow,

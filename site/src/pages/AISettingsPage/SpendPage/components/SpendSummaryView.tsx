@@ -38,6 +38,7 @@ export const SpendSummaryView: FC<SpendSummaryViewProps> = ({
 	// Page state survives summary changes; paginateItems clamps it, so a
 	// narrower date range never shows an empty page and widening it again
 	// returns to where the user was.
+	const [providerPage, setProviderPage] = useState(1);
 	const [modelPage, setModelPage] = useState(1);
 	const [clientPage, setClientPage] = useState(1);
 
@@ -68,17 +69,6 @@ export const SpendSummaryView: FC<SpendSummaryViewProps> = ({
 		}
 		return null;
 	}
-
-	const models = paginateItems(
-		summary.by_model,
-		BREAKDOWN_PAGE_SIZE,
-		modelPage,
-	);
-	const clients = paginateItems(
-		summary.by_client,
-		BREAKDOWN_PAGE_SIZE,
-		clientPage,
-	);
 
 	return (
 		<div className="space-y-6">
@@ -128,142 +118,142 @@ export const SpendSummaryView: FC<SpendSummaryViewProps> = ({
 
 			{summary.request_count === 0 ? (
 				<p className="py-12 text-center text-content-secondary">
-					No AI Gateway spend for this user in the selected period.
+					No AI Gateway spend in the selected period.
 				</p>
 			) : (
 				<>
-					<div>
-						<h3 className="m-0 mb-3 text-sm font-medium">By model</h3>
-						<TruncationNote
-							shown={summary.by_model.length}
-							total={summary.model_count}
-							noun="models"
-						/>
-						<Table aria-label="Spend by model">
-							<TableHeader>
-								<TableRow>
-									<TableHead>Model</TableHead>
-									<TableHead>Provider</TableHead>
-									<TableHead className="text-right">Cost</TableHead>
-									<TableHead className="text-right">Requests</TableHead>
-									<TableHead className="text-right">Input</TableHead>
-									<TableHead className="text-right">Output</TableHead>
-									<TableHead className="text-right">Cache read</TableHead>
-									<TableHead className="text-right">Cache write</TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{models.pagedItems.map((model) => (
-									<TableRow
-										key={`${model.provider_name}/${model.provider}/${model.model}`}
-									>
-										<TableCell>{model.model}</TableCell>
-										<TableCell className="text-content-secondary">
-											{model.provider_name || model.provider}
-										</TableCell>
-										<CostCell
-											costMicros={model.total_cost_micros}
-											unpricedRequestCount={model.unpriced_request_count}
-										/>
-										<TableCell className="text-right tabular-nums">
-											{model.request_count.toLocaleString("en-US")}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(model.input_tokens)}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(model.output_tokens)}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(model.cache_read_input_tokens)}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(model.cache_write_input_tokens)}
-										</TableCell>
-									</TableRow>
-								))}
-							</TableBody>
-						</Table>
-						{summary.by_model.length > BREAKDOWN_PAGE_SIZE && (
-							<div className="pt-4">
-								<PaginationWidgetBase
-									totalRecords={summary.by_model.length}
-									currentPage={models.clampedPage}
-									pageSize={BREAKDOWN_PAGE_SIZE}
-									onPageChange={setModelPage}
-									hasPreviousPage={models.hasPreviousPage}
-									hasNextPage={models.hasNextPage}
-								/>
-							</div>
-						)}
-					</div>
-
-					<div>
-						<h3 className="m-0 mb-3 text-sm font-medium">By client</h3>
-						<TruncationNote
-							shown={summary.by_client.length}
-							total={summary.client_count}
-							noun="clients"
-						/>
-						<Table aria-label="Spend by client">
-							<TableHeader>
-								<TableRow>
-									<TableHead>Client</TableHead>
-									<TableHead className="text-right">Cost</TableHead>
-									<TableHead className="text-right">Requests</TableHead>
-									<TableHead className="text-right">Sessions</TableHead>
-									<TableHead className="text-right">Input</TableHead>
-									<TableHead className="text-right">Output</TableHead>
-									<TableHead className="text-right">Cache read</TableHead>
-									<TableHead className="text-right">Cache write</TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{clients.pagedItems.map((client) => (
-									<TableRow key={client.client}>
-										<TableCell>{client.client}</TableCell>
-										<CostCell
-											costMicros={client.total_cost_micros}
-											unpricedRequestCount={client.unpriced_request_count}
-										/>
-										<TableCell className="text-right tabular-nums">
-											{client.request_count.toLocaleString("en-US")}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{client.session_count.toLocaleString("en-US")}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(client.input_tokens)}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(client.output_tokens)}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(client.cache_read_input_tokens)}
-										</TableCell>
-										<TableCell className="text-right tabular-nums">
-											{formatTokenCount(client.cache_write_input_tokens)}
-										</TableCell>
-									</TableRow>
-								))}
-							</TableBody>
-						</Table>
-						{summary.by_client.length > BREAKDOWN_PAGE_SIZE && (
-							<div className="pt-4">
-								<PaginationWidgetBase
-									totalRecords={summary.by_client.length}
-									currentPage={clients.clampedPage}
-									pageSize={BREAKDOWN_PAGE_SIZE}
-									onPageChange={setClientPage}
-									hasPreviousPage={clients.hasPreviousPage}
-									hasNextPage={clients.hasNextPage}
-								/>
-							</div>
-						)}
-					</div>
+					<SpendBreakdownTable
+						label="provider"
+						rows={summary.by_provider}
+						total={summary.provider_count}
+						page={providerPage}
+						onPageChange={setProviderPage}
+					/>
+					<SpendBreakdownTable
+						label="model"
+						rows={summary.by_model}
+						total={summary.model_count}
+						page={modelPage}
+						onPageChange={setModelPage}
+					/>
+					<SpendBreakdownTable
+						label="client"
+						rows={summary.by_client}
+						total={summary.client_count}
+						page={clientPage}
+						onPageChange={setClientPage}
+					/>
 				</>
 			)}
 		</div>
+	);
+};
+
+type SpendBreakdownRow =
+	| TypesGen.AIGatewaySpendProviderBreakdown
+	| TypesGen.AIGatewaySpendModelBreakdown
+	| TypesGen.AIGatewaySpendClientBreakdown;
+
+const SpendBreakdownTable: FC<{
+	label: "provider" | "model" | "client";
+	rows: readonly SpendBreakdownRow[];
+	total: number;
+	page: number;
+	onPageChange: (page: number) => void;
+}> = ({ label, rows, total, page, onPageChange }) => {
+	const items = paginateItems(rows, BREAKDOWN_PAGE_SIZE, page);
+	return (
+		<section aria-label={`Spend by ${label}`}>
+			<h3 className="m-0 mb-3 text-sm font-medium">By {label}</h3>
+			<TruncationNote shown={rows.length} total={total} noun={`${label}s`} />
+			<Table aria-label={`Spend by ${label}`}>
+				<TableHeader>
+					<TableRow>
+						<TableHead>
+							{label === "model"
+								? "Model"
+								: label === "provider"
+									? "Provider"
+									: "Client"}
+						</TableHead>
+						{label === "model" && <TableHead>Provider</TableHead>}
+						<TableHead className="text-right">Cost</TableHead>
+						<TableHead className="text-right">Requests</TableHead>
+						{label === "client" && (
+							<TableHead className="text-right">Sessions</TableHead>
+						)}
+						<TableHead className="text-right">Input</TableHead>
+						<TableHead className="text-right">Output</TableHead>
+						<TableHead className="text-right">Cache read</TableHead>
+						<TableHead className="text-right">Cache write</TableHead>
+					</TableRow>
+				</TableHeader>
+				<TableBody>
+					{items.pagedItems.map((row) => (
+						<TableRow
+							key={
+								"client" in row
+									? row.client
+									: JSON.stringify([
+											row.provider,
+											row.provider_name,
+											"model" in row ? row.model : null,
+										])
+							}
+						>
+							<TableCell>
+								{"client" in row
+									? row.client || "Unknown"
+									: "model" in row
+										? row.model || "Unknown"
+										: row.provider_name || row.provider || "Unknown"}
+							</TableCell>
+							{"model" in row && (
+								<TableCell className="text-content-secondary">
+									{row.provider_name || row.provider || "Unknown"}
+								</TableCell>
+							)}
+							<CostCell
+								costMicros={row.total_cost_micros}
+								unpricedRequestCount={row.unpriced_request_count}
+							/>
+							<TableCell className="text-right tabular-nums">
+								{row.request_count.toLocaleString("en-US")}
+							</TableCell>
+							{"session_count" in row && (
+								<TableCell className="text-right tabular-nums">
+									{row.session_count.toLocaleString("en-US")}
+								</TableCell>
+							)}
+							<TableCell className="text-right tabular-nums">
+								{formatTokenCount(row.input_tokens)}
+							</TableCell>
+							<TableCell className="text-right tabular-nums">
+								{formatTokenCount(row.output_tokens)}
+							</TableCell>
+							<TableCell className="text-right tabular-nums">
+								{formatTokenCount(row.cache_read_input_tokens)}
+							</TableCell>
+							<TableCell className="text-right tabular-nums">
+								{formatTokenCount(row.cache_write_input_tokens)}
+							</TableCell>
+						</TableRow>
+					))}
+				</TableBody>
+			</Table>
+			{rows.length > BREAKDOWN_PAGE_SIZE && (
+				<div className="pt-4">
+					<PaginationWidgetBase
+						totalRecords={rows.length}
+						currentPage={items.clampedPage}
+						pageSize={BREAKDOWN_PAGE_SIZE}
+						onPageChange={onPageChange}
+						hasPreviousPage={items.hasPreviousPage}
+						hasNextPage={items.hasNextPage}
+					/>
+				</div>
+			)}
+		</section>
 	);
 };
 

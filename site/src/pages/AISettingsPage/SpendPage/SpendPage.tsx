@@ -3,10 +3,12 @@ import { type FC, useState } from "react";
 import { useQuery } from "react-query";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import {
+	aiGatewaySpendSummary,
 	aiGatewaySpendUserSummary,
 	paginatedAIGatewaySpendUsers,
 } from "#/api/queries/aiBridge";
 import { user } from "#/api/queries/users";
+import type { AIGatewaySpendUserSummary } from "#/api/typesGenerated";
 import {
 	type DateRangeValue,
 	toBoundary,
@@ -23,6 +25,7 @@ import {
 	userSearchParam,
 } from "./components/SpendUsersTable";
 import { SpendPageView } from "./SpendPageView";
+import { spendUsersSort } from "./utils/sort";
 
 const startDateSearchParam = "startDate";
 const endDateSearchParam = "endDate";
@@ -132,6 +135,7 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 		...paginatedAIGatewaySpendUsers({
 			...dateRangeParams,
 			search: debouncedSearch,
+			...spendUsersSort(searchParams),
 		}),
 		recordsPerPage: SPEND_USERS_PAGE_SIZE,
 		preventScrollReset: true,
@@ -143,9 +147,11 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 		enabled: canViewSpend && selectedUserId !== null,
 	});
 
-	const summaryQuery = useQuery({
-		...aiGatewaySpendUserSummary(selectedUserId ?? "", dateRangeParams),
-		enabled: canViewSpend && selectedUserId !== null,
+	const summaryQuery = useQuery<AIGatewaySpendUserSummary>({
+		...(selectedUserId
+			? aiGatewaySpendUserSummary(selectedUserId, dateRangeParams)
+			: aiGatewaySpendSummary(dateRangeParams)),
+		enabled: canViewSpend,
 	});
 
 	return (
@@ -154,6 +160,7 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 			<SpendPageView
 				isEntitled={isEntitled}
 				isEnabled={isEnabled}
+				now={now?.toDate()}
 				dateRange={dateRange}
 				onDateRangeChange={onDateRangeChange}
 				searchFilter={searchFilter}

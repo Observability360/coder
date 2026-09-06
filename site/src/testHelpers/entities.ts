@@ -5399,6 +5399,31 @@ export const MockAIGatewaySpendUserSummary: TypesGen.AIGatewaySpendUserSummary =
 		cache_write_input_tokens: 5_000,
 		model_count: 2,
 		client_count: 2,
+		provider_count: 2,
+		by_provider: [
+			{
+				provider: "anthropic",
+				provider_name: "anthropic-main",
+				total_cost_micros: 2_000_000,
+				request_count: 30,
+				unpriced_request_count: 0,
+				input_tokens: 150_000,
+				output_tokens: 250_000,
+				cache_read_input_tokens: 8_000,
+				cache_write_input_tokens: 4_000,
+			},
+			{
+				provider: "openai",
+				provider_name: "openai-main",
+				total_cost_micros: 500_000,
+				request_count: 12,
+				unpriced_request_count: 0,
+				input_tokens: 50_000,
+				output_tokens: 50_000,
+				cache_read_input_tokens: 2_000,
+				cache_write_input_tokens: 1_000,
+			},
+		],
 		by_model: [
 			{
 				provider: "anthropic",

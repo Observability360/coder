@@ -19,6 +19,7 @@ import { SpendSummaryView } from "./SpendSummaryView";
 
 interface SpendDrillInViewProps {
 	selectedUser: TypesGen.User | null;
+	now?: Date;
 	isLoading: boolean;
 	error: unknown;
 	onRetry: () => void;
@@ -60,6 +61,7 @@ const hasEmptyAppliedWindow = (applied: AppliedWindow) =>
 
 export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 	selectedUser,
+	now,
 	isLoading,
 	error,
 	onRetry,
@@ -81,6 +83,7 @@ export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 				description="AI Gateway spend for a single user in the selected date range."
 				actions={
 					<DateRangePicker
+						now={now}
 						value={displayDateRange}
 						onChange={onDateRangeChange}
 					/>

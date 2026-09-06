@@ -655,7 +655,7 @@ func (api *API) aiGatewaySpendWindow(rw http.ResponseWriter, r *http.Request) (s
 // aiGatewaySpendUsers lists per-user AI Gateway spend for the deployment.
 //
 // @Summary List AI Gateway spend by user
-// @Description Returns AI Gateway spend for every user with finished requests in the window, most expensive first. Requires permission to read any AI Gateway interception.
+// @Description Returns AI Gateway spend for every user with finished requests in the window. Defaults to most expensive first. Requires permission to read any AI Gateway interception.
 // @Description start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
 // @ID list-ai-gateway-spend-by-user
 // @Security CoderSessionToken
@@ -664,6 +664,8 @@ func (api *API) aiGatewaySpendWindow(rw http.ResponseWriter, r *http.Request) (s
 // @Param start_date query string false "Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary." format(date-time)
 // @Param end_date query string false "Exclusive upper bound (RFC3339). Defaults to now." format(date-time)
 // @Param search query string false "Case-insensitive match on username or name"
+// @Param sort_by query string false "Sort column" Enums(username, total_cost_micros, request_count, session_count, input_tokens, output_tokens, cache_read_input_tokens, cache_write_input_tokens) default(total_cost_micros)
+// @Param sort_order query string false "Sort direction" Enums(asc, desc) default(desc)
 // @Param limit query int false "Page limit (default 10, maximum 100)"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} codersdk.AIGatewaySpendUsersResponse
@@ -703,10 +705,23 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	parser := httpapi.NewQueryParamParser()
+	sortBy := httpapi.ParseCustom(parser, r.URL.Query(), codersdk.AIGatewaySpendSortByTotalCostMicros, "sort_by", httpapi.ParseEnum[codersdk.AIGatewaySpendSortBy])
+	sortOrder := httpapi.ParseCustom(parser, r.URL.Query(), codersdk.AIGatewaySpendSortOrderDesc, "sort_order", httpapi.ParseEnum[codersdk.AIGatewaySpendSortOrder])
+	if len(parser.Errors) > 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message:     "Query parameters have invalid values.",
+			Validations: parser.Errors,
+		})
+		return
+	}
+
 	rows, err := api.Database.ListAIBridgeSpendByUser(ctx, database.ListAIBridgeSpendByUserParams{
 		StartDate: start,
 		EndDate:   end,
 		Search:    r.URL.Query().Get("search"),
+		SortBy:    string(sortBy),
+		SortOrder: string(sortOrder),
 		// #nosec G115 - The limit is capped above and the offset is parsed as int32.
 		PageLimit: int32(page.Limit),
 		// #nosec G115 - The limit is capped above and the offset is parsed as int32.
@@ -728,6 +743,8 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 			StartDate:  start,
 			EndDate:    end,
 			Search:     r.URL.Query().Get("search"),
+			SortBy:     string(sortBy),
+			SortOrder:  string(sortOrder),
 			PageLimit:  1,
 			PageOffset: 0,
 		})
@@ -775,11 +792,23 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// aiGatewaySpendUserSummary returns one user's AI Gateway spend broken down by
-// model and by client.
-//
+// @Summary Get AI Gateway spend summary for the deployment
+// @Description Returns deployment-wide AI Gateway spend over the window with per-provider, per-model, and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
+// @Description start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
+// @ID get-ai-gateway-spend-summary
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Enterprise
+// @Param start_date query string false "Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary." format(date-time)
+// @Param end_date query string false "Exclusive upper bound (RFC3339). Defaults to now." format(date-time)
+// @Success 200 {object} codersdk.AIGatewaySpendUserSummary
+// @Router /api/v2/ai-gateway/spend/summary [get]
+func (api *API) aiGatewaySpendSummary(rw http.ResponseWriter, r *http.Request) {
+	api.aiGatewaySpendSummaryForUser(rw, r, uuid.Nil)
+}
+
 // @Summary Get AI Gateway spend summary for a user
-// @Description Returns the user's AI Gateway spend over the window with per-model and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
+// @Description Returns the user's AI Gateway spend over the window with per-provider, per-model, and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
 // @Description start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
 // @ID get-ai-gateway-spend-summary-for-a-user
 // @Security CoderSessionToken
@@ -791,8 +820,11 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} codersdk.AIGatewaySpendUserSummary
 // @Router /api/v2/ai-gateway/spend/users/{user}/summary [get]
 func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Request) {
+	api.aiGatewaySpendSummaryForUser(rw, r, httpmw.UserParam(r).ID)
+}
+
+func (api *API) aiGatewaySpendSummaryForUser(rw http.ResponseWriter, r *http.Request, userID uuid.UUID) {
 	ctx := r.Context()
-	user := httpmw.UserParam(r)
 
 	if !api.Authorize(r, policy.ActionRead, rbac.ResourceAibridgeInterception) {
 		httpapi.Forbidden(rw)
@@ -805,14 +837,15 @@ func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Reques
 	}
 
 	var (
-		totals   database.GetAIBridgeSpendUserSummaryRow
-		byModel  []database.ListAIBridgeSpendByUserModelRow
-		byClient []database.ListAIBridgeSpendByUserClientRow
+		totals     database.GetAIBridgeSpendUserSummaryRow
+		byModel    []database.ListAIBridgeSpendByUserModelRow
+		byClient   []database.ListAIBridgeSpendByUserClientRow
+		byProvider []database.ListAIBridgeSpendByUserProviderRow
 	)
 	err := api.Database.InTx(func(db database.Store) error {
 		var err error
 		totals, err = db.GetAIBridgeSpendUserSummary(ctx, database.GetAIBridgeSpendUserSummaryParams{
-			UserID:    user.ID,
+			UserID:    userID,
 			StartDate: start,
 			EndDate:   end,
 		})
@@ -820,7 +853,7 @@ func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Reques
 			return xerrors.Errorf("get spend summary: %w", err)
 		}
 		byModel, err = db.ListAIBridgeSpendByUserModel(ctx, database.ListAIBridgeSpendByUserModelParams{
-			UserID:     user.ID,
+			UserID:     userID,
 			StartDate:  start,
 			EndDate:    end,
 			LimitCount: codersdk.AIGatewaySpendBreakdownLimit,
@@ -829,7 +862,7 @@ func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Reques
 			return xerrors.Errorf("list spend by model: %w", err)
 		}
 		byClient, err = db.ListAIBridgeSpendByUserClient(ctx, database.ListAIBridgeSpendByUserClientParams{
-			UserID:     user.ID,
+			UserID:     userID,
 			StartDate:  start,
 			EndDate:    end,
 			LimitCount: codersdk.AIGatewaySpendBreakdownLimit,
@@ -837,11 +870,20 @@ func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Reques
 		if err != nil {
 			return xerrors.Errorf("list spend by client: %w", err)
 		}
+		byProvider, err = db.ListAIBridgeSpendByUserProvider(ctx, database.ListAIBridgeSpendByUserProviderParams{
+			UserID:     userID,
+			StartDate:  start,
+			EndDate:    end,
+			LimitCount: codersdk.AIGatewaySpendBreakdownLimit,
+		})
+		if err != nil {
+			return xerrors.Errorf("list spend by provider: %w", err)
+		}
 		return nil
 	}, &database.TxOptions{
 		Isolation:    sql.LevelRepeatableRead,
 		ReadOnly:     true,
-		TxIdentifier: "ai_gateway_spend_user_summary",
+		TxIdentifier: "ai_gateway_spend_summary",
 	})
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -866,8 +908,9 @@ func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Reques
 			},
 			SessionCount: totals.SessionCount,
 		},
-		ByModel:  make([]codersdk.AIGatewaySpendModelBreakdown, len(byModel)),
-		ByClient: make([]codersdk.AIGatewaySpendClientBreakdown, len(byClient)),
+		ByProvider: make([]codersdk.AIGatewaySpendProviderBreakdown, len(byProvider)),
+		ByModel:    make([]codersdk.AIGatewaySpendModelBreakdown, len(byModel)),
+		ByClient:   make([]codersdk.AIGatewaySpendClientBreakdown, len(byClient)),
 	}
 	// The window function that carries total_count only rides along on
 	// returned rows.
@@ -876,6 +919,24 @@ func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Reques
 	}
 	if len(byClient) > 0 {
 		resp.ClientCount = byClient[0].TotalCount
+	}
+	if len(byProvider) > 0 {
+		resp.ProviderCount = byProvider[0].TotalCount
+	}
+	for i, row := range byProvider {
+		resp.ByProvider[i] = codersdk.AIGatewaySpendProviderBreakdown{
+			Provider:     row.Provider,
+			ProviderName: row.ProviderName,
+			AIGatewaySpendUsage: codersdk.AIGatewaySpendUsage{
+				TotalCostMicros:       row.TotalCostMicros,
+				RequestCount:          row.RequestCount,
+				UnpricedRequestCount:  row.UnpricedRequestCount,
+				InputTokens:           row.InputTokens,
+				OutputTokens:          row.OutputTokens,
+				CacheReadInputTokens:  row.CacheReadInputTokens,
+				CacheWriteInputTokens: row.CacheWriteInputTokens,
+			},
+		}
 	}
 	for i, row := range byModel {
 		resp.ByModel[i] = codersdk.AIGatewaySpendModelBreakdown{

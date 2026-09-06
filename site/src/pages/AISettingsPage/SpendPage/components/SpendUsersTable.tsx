@@ -1,3 +1,4 @@
+import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon } from "lucide-react";
 import type { FC } from "react";
 import {
 	Link as RouterLink,
@@ -9,10 +10,7 @@ import type * as TypesGen from "#/api/typesGenerated";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
 import { AvatarData } from "#/components/Avatar/AvatarData";
 import { Button } from "#/components/Button/Button";
-import {
-	DateRangePicker,
-	type DateRangeValue,
-} from "#/components/DateRangePicker/DateRangePicker";
+import type { DateRangeValue } from "#/components/DateRangePicker/DateRangePicker";
 import { PaginationContainer } from "#/components/PaginationWidget/PaginationContainer";
 import { SearchField } from "#/components/SearchField/SearchField";
 import { Spinner } from "#/components/Spinner/Spinner";
@@ -26,6 +24,7 @@ import {
 } from "#/components/Table/Table";
 import { formatTokenCount } from "#/utils/analytics";
 import type { SpendUsersQuery } from "../SpendPageView";
+import { spendSortColumns, spendUsersSort } from "../utils/sort";
 import { CostCell } from "./CostCell";
 import { RetentionNotice } from "./RetentionNotice";
 import { SpendSectionHeader } from "./SpendSectionHeader";
@@ -44,7 +43,6 @@ export const spendListSearchFromState = (state: unknown): string | null =>
 
 interface SpendUsersTableProps {
 	displayDateRange: DateRangeValue;
-	onDateRangeChange: (value: DateRangeValue) => void;
 	searchFilter: string;
 	onSearchFilterChange: (value: string) => void;
 	usersQuery: SpendUsersQuery;
@@ -52,12 +50,33 @@ interface SpendUsersTableProps {
 
 export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 	displayDateRange,
-	onDateRangeChange,
 	searchFilter,
 	onSearchFilterChange,
 	usersQuery,
 }) => {
-	const [searchParams] = useSearchParams();
+	const [searchParams, setSearchParams] = useSearchParams();
+	const sort = spendUsersSort(searchParams);
+	const onSort = (field: TypesGen.AIGatewaySpendSortBy) => {
+		setSearchParams(
+			(prev) => {
+				const next = new URLSearchParams(prev);
+				next.set("sort_by", field);
+				next.set(
+					"sort_order",
+					field === sort.sort_by
+						? sort.sort_order === "asc"
+							? "desc"
+							: "asc"
+						: field === "username"
+							? "asc"
+							: "desc",
+				);
+				next.delete("page");
+				return next;
+			},
+			{ replace: true },
+		);
+	};
 	const detailsState = { fromSpendList: searchParams.toString() };
 	const userDetailsTo = (user: TypesGen.AIGatewaySpendUser): To => {
 		const next = new URLSearchParams(searchParams);
@@ -80,12 +99,6 @@ export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 			<SpendSectionHeader
 				title="Spend by user"
 				description="AI Gateway cost and usage for each user in the selected date range."
-				actions={
-					<DateRangePicker
-						value={displayDateRange}
-						onChange={onDateRangeChange}
-					/>
-				}
 			/>
 			<div className="w-full md:max-w-sm">
 				<SearchField
@@ -144,16 +157,39 @@ export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 									<Table aria-label="Spend by user">
 										<TableHeader>
 											<TableRow>
-												<TableHead>User</TableHead>
-												<TableHead className="text-right">Cost</TableHead>
-												<TableHead className="text-right">Requests</TableHead>
-												<TableHead className="text-right">Sessions</TableHead>
-												<TableHead className="text-right">Input</TableHead>
-												<TableHead className="text-right">Output</TableHead>
-												<TableHead className="text-right">Cache read</TableHead>
-												<TableHead className="text-right">
-													Cache write
-												</TableHead>
+												{spendSortColumns.map(({ field, label }) => {
+													const active = sort.sort_by === field;
+													const Icon = active
+														? sort.sort_order === "asc"
+															? ArrowUpIcon
+															: ArrowDownIcon
+														: ArrowUpDownIcon;
+													return (
+														<TableHead
+															key={field}
+															className={
+																field === "username" ? "" : "text-right"
+															}
+															aria-sort={
+																active
+																	? sort.sort_order === "asc"
+																		? "ascending"
+																		: "descending"
+																	: "none"
+															}
+														>
+															<Button
+																variant="subtle"
+																size="sm"
+																className="px-0"
+																onClick={() => onSort(field)}
+															>
+																{label}
+																<Icon aria-hidden="true" className="size-3" />
+															</Button>
+														</TableHead>
+													);
+												})}
 											</TableRow>
 										</TableHeader>
 										<TableBody>

@@ -819,7 +819,9 @@ FROM per_request;
 --     is the number of requests with at least one usage whose cost_micros
 --     is NULL; the tu.id guard keeps the unmatched LEFT JOIN side from
 --     reading as unpriced usage.
---   * A session is a distinct session_id. Client is COALESCE(client, 'Unknown').
+--   * A session is a distinct (initiator_id, session_id) pair.
+--     Client is COALESCE(client, 'Unknown').
+--   * A zero user_id includes every user in summary and breakdown queries.
 
 -- name: ListAIBridgeSpendByUser :many
 WITH per_request AS (
@@ -838,7 +840,7 @@ WITH per_request AS (
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
 	GROUP BY i.id
-)
+), per_user AS (
 SELECT
 	u.id AS user_id,
 	u.username,
@@ -861,7 +863,34 @@ WHERE
 		ELSE true
 	END
 GROUP BY u.id, u.username, u.name, u.avatar_url
-ORDER BY total_cost_micros DESC, u.username ASC, u.id ASC
+)
+SELECT * FROM per_user
+ORDER BY
+	CASE WHEN @sort_by::text = 'username' AND @sort_order::text = 'asc' THEN username END ASC,
+	CASE WHEN @sort_by::text = 'username' AND @sort_order::text != 'asc' THEN username END DESC,
+	CASE WHEN @sort_by::text != 'username' AND @sort_order::text = 'asc' THEN
+		CASE @sort_by::text
+			WHEN 'request_count' THEN request_count
+			WHEN 'session_count' THEN session_count
+			WHEN 'input_tokens' THEN input_tokens
+			WHEN 'output_tokens' THEN output_tokens
+			WHEN 'cache_read_input_tokens' THEN cache_read_input_tokens
+			WHEN 'cache_write_input_tokens' THEN cache_write_input_tokens
+			ELSE total_cost_micros
+		END
+	END ASC,
+	CASE WHEN @sort_by::text != 'username' AND @sort_order::text != 'asc' THEN
+		CASE @sort_by::text
+			WHEN 'request_count' THEN request_count
+			WHEN 'session_count' THEN session_count
+			WHEN 'input_tokens' THEN input_tokens
+			WHEN 'output_tokens' THEN output_tokens
+			WHEN 'cache_read_input_tokens' THEN cache_read_input_tokens
+			WHEN 'cache_write_input_tokens' THEN cache_write_input_tokens
+			ELSE total_cost_micros
+		END
+	END DESC,
+	username ASC, user_id ASC
 LIMIT COALESCE(NULLIF(@page_limit::integer, 0), 10)
 OFFSET @page_offset::integer;
 
@@ -869,6 +898,7 @@ OFFSET @page_offset::integer;
 WITH per_request AS (
 	SELECT
 		i.session_id,
+		i.initiator_id,
 		COALESCE(SUM(tu.cost_micros), 0)::bigint AS cost_micros,
 		BOOL_OR(tu.id IS NOT NULL AND tu.cost_micros IS NULL) AS has_unpriced_usage,
 		COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
@@ -877,7 +907,7 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.initiator_id = @user_id::uuid
+	WHERE (@user_id::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = @user_id::uuid)
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
@@ -887,7 +917,7 @@ SELECT
 	COALESCE(SUM(cost_micros), 0)::bigint AS total_cost_micros,
 	COUNT(*)::bigint AS request_count,
 	COUNT(*) FILTER (WHERE has_unpriced_usage)::bigint AS unpriced_request_count,
-	COUNT(DISTINCT session_id)::bigint AS session_count,
+	COUNT(DISTINCT (initiator_id, session_id))::bigint AS session_count,
 	COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
 	COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
 	COALESCE(SUM(cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
@@ -908,7 +938,7 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.initiator_id = @user_id::uuid
+	WHERE (@user_id::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = @user_id::uuid)
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
@@ -936,6 +966,7 @@ WITH per_request AS (
 	SELECT
 		COALESCE(i.client, 'Unknown')::text AS client,
 		i.session_id,
+		i.initiator_id,
 		COALESCE(SUM(tu.cost_micros), 0)::bigint AS cost_micros,
 		BOOL_OR(tu.id IS NOT NULL AND tu.cost_micros IS NULL) AS has_unpriced_usage,
 		COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
@@ -944,7 +975,7 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.initiator_id = @user_id::uuid
+	WHERE (@user_id::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = @user_id::uuid)
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
@@ -955,7 +986,7 @@ SELECT
 	COALESCE(SUM(cost_micros), 0)::bigint AS total_cost_micros,
 	COUNT(*)::bigint AS request_count,
 	COUNT(*) FILTER (WHERE has_unpriced_usage)::bigint AS unpriced_request_count,
-	COUNT(DISTINCT session_id)::bigint AS session_count,
+	COUNT(DISTINCT (initiator_id, session_id))::bigint AS session_count,
 	COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
 	COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
 	COALESCE(SUM(cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
@@ -964,4 +995,39 @@ SELECT
 FROM per_request
 GROUP BY client
 ORDER BY total_cost_micros DESC, client ASC
+LIMIT @limit_count::int;
+
+-- name: ListAIBridgeSpendByUserProvider :many
+WITH per_request AS (
+	SELECT
+		i.provider,
+		i.provider_name,
+		COALESCE(SUM(tu.cost_micros), 0)::bigint AS cost_micros,
+		BOOL_OR(tu.id IS NOT NULL AND tu.cost_micros IS NULL) AS has_unpriced_usage,
+		COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+		COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+		COALESCE(SUM(tu.cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
+		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
+	FROM aibridge_interceptions i
+	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
+	WHERE (@user_id::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = @user_id::uuid)
+		AND i.started_at >= @start_date::timestamptz
+		AND i.started_at < @end_date::timestamptz
+		AND i.ended_at IS NOT NULL
+	GROUP BY i.id
+)
+SELECT
+	provider,
+	provider_name,
+	COALESCE(SUM(cost_micros), 0)::bigint AS total_cost_micros,
+	COUNT(*)::bigint AS request_count,
+	COUNT(*) FILTER (WHERE has_unpriced_usage)::bigint AS unpriced_request_count,
+	COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+	COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+	COALESCE(SUM(cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
+	COALESCE(SUM(cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens,
+	COUNT(*) OVER()::bigint AS total_count
+FROM per_request
+GROUP BY provider, provider_name
+ORDER BY total_cost_micros DESC, provider ASC, provider_name ASC
 LIMIT @limit_count::int;

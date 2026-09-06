@@ -4864,6 +4864,14 @@ func (m queryMetricsStore) ListAIBridgeSpendByUserModel(ctx context.Context, arg
 	return r0, r1
 }
 
+func (m queryMetricsStore) ListAIBridgeSpendByUserProvider(ctx context.Context, arg database.ListAIBridgeSpendByUserProviderParams) ([]database.ListAIBridgeSpendByUserProviderRow, error) {
+	start := time.Now()
+	r0, r1 := m.s.ListAIBridgeSpendByUserProvider(ctx, arg)
+	m.queryLatencies.WithLabelValues("ListAIBridgeSpendByUserProvider").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "ListAIBridgeSpendByUserProvider").Inc()
+	return r0, r1
+}
+
 func (m queryMetricsStore) ListAIBridgeTokenUsagesByInterceptionIDs(ctx context.Context, interceptionIds []uuid.UUID) ([]database.AIBridgeTokenUsage, error) {
 	start := time.Now()
 	r0, r1 := m.s.ListAIBridgeTokenUsagesByInterceptionIDs(ctx, interceptionIds)

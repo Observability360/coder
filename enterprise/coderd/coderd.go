@@ -333,6 +333,7 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 				apiKeyMiddleware,
 				api.RequireFeatureMW(codersdk.FeatureAIBridge),
 			)
+			r.Get("/summary", api.aiGatewaySpendSummary)
 			r.Get("/users", api.aiGatewaySpendUsers)
 			r.Route("/users/{user}", func(r chi.Router) {
 				r.Use(httpmw.ExtractUserParam(options.Database))

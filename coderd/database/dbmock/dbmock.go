@@ -9162,6 +9162,21 @@ func (mr *MockStoreMockRecorder) ListAIBridgeSpendByUserModel(ctx, arg any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAIBridgeSpendByUserModel", reflect.TypeOf((*MockStore)(nil).ListAIBridgeSpendByUserModel), ctx, arg)
 }
 
+// ListAIBridgeSpendByUserProvider mocks base method.
+func (m *MockStore) ListAIBridgeSpendByUserProvider(ctx context.Context, arg database.ListAIBridgeSpendByUserProviderParams) ([]database.ListAIBridgeSpendByUserProviderRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAIBridgeSpendByUserProvider", ctx, arg)
+	ret0, _ := ret[0].([]database.ListAIBridgeSpendByUserProviderRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAIBridgeSpendByUserProvider indicates an expected call of ListAIBridgeSpendByUserProvider.
+func (mr *MockStoreMockRecorder) ListAIBridgeSpendByUserProvider(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAIBridgeSpendByUserProvider", reflect.TypeOf((*MockStore)(nil).ListAIBridgeSpendByUserProvider), ctx, arg)
+}
+
 // ListAIBridgeTokenUsagesByInterceptionIDs mocks base method.
 func (m *MockStore) ListAIBridgeTokenUsagesByInterceptionIDs(ctx context.Context, interceptionIds []uuid.UUID) ([]database.AIBridgeTokenUsage, error) {
 	m.ctrl.T.Helper()

@@ -1424,6 +1424,7 @@ const getAIBridgeSpendUserSummary = `-- name: GetAIBridgeSpendUserSummary :one
 WITH per_request AS (
 	SELECT
 		i.session_id,
+		i.initiator_id,
 		COALESCE(SUM(tu.cost_micros), 0)::bigint AS cost_micros,
 		BOOL_OR(tu.id IS NOT NULL AND tu.cost_micros IS NULL) AS has_unpriced_usage,
 		COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
@@ -1432,7 +1433,7 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.initiator_id = $1::uuid
+	WHERE ($1::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = $1::uuid)
 		AND i.started_at >= $2::timestamptz
 		AND i.started_at < $3::timestamptz
 		AND i.ended_at IS NOT NULL
@@ -1442,7 +1443,7 @@ SELECT
 	COALESCE(SUM(cost_micros), 0)::bigint AS total_cost_micros,
 	COUNT(*)::bigint AS request_count,
 	COUNT(*) FILTER (WHERE has_unpriced_usage)::bigint AS unpriced_request_count,
-	COUNT(DISTINCT session_id)::bigint AS session_count,
+	COUNT(DISTINCT (initiator_id, session_id))::bigint AS session_count,
 	COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
 	COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
 	COALESCE(SUM(cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
@@ -2600,11 +2601,11 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.started_at >= $4::timestamptz
-		AND i.started_at < $5::timestamptz
+	WHERE i.started_at >= $5::timestamptz
+		AND i.started_at < $6::timestamptz
 		AND i.ended_at IS NOT NULL
 	GROUP BY i.id
-)
+), per_user AS (
 SELECT
 	u.id AS user_id,
 	u.username,
@@ -2623,21 +2624,50 @@ FROM per_request r
 JOIN users u ON u.id = r.initiator_id
 WHERE
 	CASE
-		WHEN $1::text != '' THEN u.username ILIKE '%' || $1::text || '%' OR u.name ILIKE '%' || $1::text || '%'
+		WHEN $7::text != '' THEN u.username ILIKE '%' || $7::text || '%' OR u.name ILIKE '%' || $7::text || '%'
 		ELSE true
 	END
 GROUP BY u.id, u.username, u.name, u.avatar_url
-ORDER BY total_cost_micros DESC, u.username ASC, u.id ASC
-LIMIT COALESCE(NULLIF($3::integer, 0), 10)
-OFFSET $2::integer
+)
+SELECT user_id, username, name, avatar_url, total_cost_micros, request_count, unpriced_request_count, session_count, input_tokens, output_tokens, cache_read_input_tokens, cache_write_input_tokens, total_count FROM per_user
+ORDER BY
+	CASE WHEN $1::text = 'username' AND $2::text = 'asc' THEN username END ASC,
+	CASE WHEN $1::text = 'username' AND $2::text != 'asc' THEN username END DESC,
+	CASE WHEN $1::text != 'username' AND $2::text = 'asc' THEN
+		CASE $1::text
+			WHEN 'request_count' THEN request_count
+			WHEN 'session_count' THEN session_count
+			WHEN 'input_tokens' THEN input_tokens
+			WHEN 'output_tokens' THEN output_tokens
+			WHEN 'cache_read_input_tokens' THEN cache_read_input_tokens
+			WHEN 'cache_write_input_tokens' THEN cache_write_input_tokens
+			ELSE total_cost_micros
+		END
+	END ASC,
+	CASE WHEN $1::text != 'username' AND $2::text != 'asc' THEN
+		CASE $1::text
+			WHEN 'request_count' THEN request_count
+			WHEN 'session_count' THEN session_count
+			WHEN 'input_tokens' THEN input_tokens
+			WHEN 'output_tokens' THEN output_tokens
+			WHEN 'cache_read_input_tokens' THEN cache_read_input_tokens
+			WHEN 'cache_write_input_tokens' THEN cache_write_input_tokens
+			ELSE total_cost_micros
+		END
+	END DESC,
+	username ASC, user_id ASC
+LIMIT COALESCE(NULLIF($4::integer, 0), 10)
+OFFSET $3::integer
 `
 
 type ListAIBridgeSpendByUserParams struct {
-	Search     string    `db:"search" json:"search"`
+	SortBy     string    `db:"sort_by" json:"sort_by"`
+	SortOrder  string    `db:"sort_order" json:"sort_order"`
 	PageOffset int32     `db:"page_offset" json:"page_offset"`
 	PageLimit  int32     `db:"page_limit" json:"page_limit"`
 	StartDate  time.Time `db:"start_date" json:"start_date"`
 	EndDate    time.Time `db:"end_date" json:"end_date"`
+	Search     string    `db:"search" json:"search"`
 }
 
 type ListAIBridgeSpendByUserRow struct {
@@ -2666,14 +2696,18 @@ type ListAIBridgeSpendByUserRow struct {
 //     is the number of requests with at least one usage whose cost_micros
 //     is NULL; the tu.id guard keeps the unmatched LEFT JOIN side from
 //     reading as unpriced usage.
-//   - A session is a distinct session_id. Client is COALESCE(client, 'Unknown').
+//   - A session is a distinct (initiator_id, session_id) pair.
+//     Client is COALESCE(client, 'Unknown').
+//   - A zero user_id includes every user in summary and breakdown queries.
 func (q *sqlQuerier) ListAIBridgeSpendByUser(ctx context.Context, arg ListAIBridgeSpendByUserParams) ([]ListAIBridgeSpendByUserRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAIBridgeSpendByUser,
-		arg.Search,
+		arg.SortBy,
+		arg.SortOrder,
 		arg.PageOffset,
 		arg.PageLimit,
 		arg.StartDate,
 		arg.EndDate,
+		arg.Search,
 	)
 	if err != nil {
 		return nil, err
@@ -2715,6 +2749,7 @@ WITH per_request AS (
 	SELECT
 		COALESCE(i.client, 'Unknown')::text AS client,
 		i.session_id,
+		i.initiator_id,
 		COALESCE(SUM(tu.cost_micros), 0)::bigint AS cost_micros,
 		BOOL_OR(tu.id IS NOT NULL AND tu.cost_micros IS NULL) AS has_unpriced_usage,
 		COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
@@ -2723,7 +2758,7 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.initiator_id = $2::uuid
+	WHERE ($2::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = $2::uuid)
 		AND i.started_at >= $3::timestamptz
 		AND i.started_at < $4::timestamptz
 		AND i.ended_at IS NOT NULL
@@ -2734,7 +2769,7 @@ SELECT
 	COALESCE(SUM(cost_micros), 0)::bigint AS total_cost_micros,
 	COUNT(*)::bigint AS request_count,
 	COUNT(*) FILTER (WHERE has_unpriced_usage)::bigint AS unpriced_request_count,
-	COUNT(DISTINCT session_id)::bigint AS session_count,
+	COUNT(DISTINCT (initiator_id, session_id))::bigint AS session_count,
 	COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
 	COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
 	COALESCE(SUM(cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
@@ -2819,7 +2854,7 @@ WITH per_request AS (
 		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
 	FROM aibridge_interceptions i
 	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
-	WHERE i.initiator_id = $2::uuid
+	WHERE ($2::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = $2::uuid)
 		AND i.started_at >= $3::timestamptz
 		AND i.started_at < $4::timestamptz
 		AND i.ended_at IS NOT NULL
@@ -2882,6 +2917,101 @@ func (q *sqlQuerier) ListAIBridgeSpendByUserModel(ctx context.Context, arg ListA
 			&i.Provider,
 			&i.ProviderName,
 			&i.Model,
+			&i.TotalCostMicros,
+			&i.RequestCount,
+			&i.UnpricedRequestCount,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadInputTokens,
+			&i.CacheWriteInputTokens,
+			&i.TotalCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAIBridgeSpendByUserProvider = `-- name: ListAIBridgeSpendByUserProvider :many
+WITH per_request AS (
+	SELECT
+		i.provider,
+		i.provider_name,
+		COALESCE(SUM(tu.cost_micros), 0)::bigint AS cost_micros,
+		BOOL_OR(tu.id IS NOT NULL AND tu.cost_micros IS NULL) AS has_unpriced_usage,
+		COALESCE(SUM(tu.input_tokens), 0)::bigint AS input_tokens,
+		COALESCE(SUM(tu.output_tokens), 0)::bigint AS output_tokens,
+		COALESCE(SUM(tu.cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
+		COALESCE(SUM(tu.cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens
+	FROM aibridge_interceptions i
+	LEFT JOIN aibridge_token_usages tu ON tu.interception_id = i.id
+	WHERE ($2::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR i.initiator_id = $2::uuid)
+		AND i.started_at >= $3::timestamptz
+		AND i.started_at < $4::timestamptz
+		AND i.ended_at IS NOT NULL
+	GROUP BY i.id
+)
+SELECT
+	provider,
+	provider_name,
+	COALESCE(SUM(cost_micros), 0)::bigint AS total_cost_micros,
+	COUNT(*)::bigint AS request_count,
+	COUNT(*) FILTER (WHERE has_unpriced_usage)::bigint AS unpriced_request_count,
+	COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+	COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+	COALESCE(SUM(cache_read_input_tokens), 0)::bigint AS cache_read_input_tokens,
+	COALESCE(SUM(cache_write_input_tokens), 0)::bigint AS cache_write_input_tokens,
+	COUNT(*) OVER()::bigint AS total_count
+FROM per_request
+GROUP BY provider, provider_name
+ORDER BY total_cost_micros DESC, provider ASC, provider_name ASC
+LIMIT $1::int
+`
+
+type ListAIBridgeSpendByUserProviderParams struct {
+	LimitCount int32     `db:"limit_count" json:"limit_count"`
+	UserID     uuid.UUID `db:"user_id" json:"user_id"`
+	StartDate  time.Time `db:"start_date" json:"start_date"`
+	EndDate    time.Time `db:"end_date" json:"end_date"`
+}
+
+type ListAIBridgeSpendByUserProviderRow struct {
+	Provider              string `db:"provider" json:"provider"`
+	ProviderName          string `db:"provider_name" json:"provider_name"`
+	TotalCostMicros       int64  `db:"total_cost_micros" json:"total_cost_micros"`
+	RequestCount          int64  `db:"request_count" json:"request_count"`
+	UnpricedRequestCount  int64  `db:"unpriced_request_count" json:"unpriced_request_count"`
+	InputTokens           int64  `db:"input_tokens" json:"input_tokens"`
+	OutputTokens          int64  `db:"output_tokens" json:"output_tokens"`
+	CacheReadInputTokens  int64  `db:"cache_read_input_tokens" json:"cache_read_input_tokens"`
+	CacheWriteInputTokens int64  `db:"cache_write_input_tokens" json:"cache_write_input_tokens"`
+	TotalCount            int64  `db:"total_count" json:"total_count"`
+}
+
+func (q *sqlQuerier) ListAIBridgeSpendByUserProvider(ctx context.Context, arg ListAIBridgeSpendByUserProviderParams) ([]ListAIBridgeSpendByUserProviderRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAIBridgeSpendByUserProvider,
+		arg.LimitCount,
+		arg.UserID,
+		arg.StartDate,
+		arg.EndDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAIBridgeSpendByUserProviderRow
+	for rows.Next() {
+		var i ListAIBridgeSpendByUserProviderRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.ProviderName,
 			&i.TotalCostMicros,
 			&i.RequestCount,
 			&i.UnpricedRequestCount,

@@ -329,6 +329,99 @@ curl -X GET http://coder-server:8080/api/v2/ai-gateway/serve \
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
+## Get AI Gateway spend summary for the deployment
+
+### Code samples
+
+```sh
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/ai-gateway/spend/summary \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /api/v2/ai-gateway/spend/summary`
+
+Returns deployment-wide AI Gateway spend over the window with per-provider, per-model, and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
+start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
+
+### Parameters
+
+| Name         | In    | Type              | Required | Description                                                                                                   |
+|--------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
+| `start_date` | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
+| `end_date`   | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+  "by_client": [
+    {
+      "cache_read_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "client": "string",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "request_count": 0,
+      "session_count": 0,
+      "total_cost_micros": 0,
+      "unpriced_request_count": 0
+    }
+  ],
+  "by_model": [
+    {
+      "cache_read_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "input_tokens": 0,
+      "model": "string",
+      "output_tokens": 0,
+      "provider": "string",
+      "provider_name": "string",
+      "request_count": 0,
+      "total_cost_micros": 0,
+      "unpriced_request_count": 0
+    }
+  ],
+  "by_provider": [
+    {
+      "cache_read_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "provider": "string",
+      "provider_name": "string",
+      "request_count": 0,
+      "total_cost_micros": 0,
+      "unpriced_request_count": 0
+    }
+  ],
+  "cache_read_input_tokens": 0,
+  "cache_write_input_tokens": 0,
+  "client_count": 0,
+  "end_date": "2019-08-24T14:15:22Z",
+  "input_tokens": 0,
+  "model_count": 0,
+  "output_tokens": 0,
+  "provider_count": 0,
+  "request_count": 0,
+  "session_count": 0,
+  "start_date": "2019-08-24T14:15:22Z",
+  "total_cost_micros": 0,
+  "unpriced_request_count": 0
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                                             |
+|--------|---------------------------------------------------------|-------------|------------------------------------------------------------------------------------|
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.AIGatewaySpendUserSummary](schemas.md#codersdkaigatewayspendusersummary) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
 ## List AI Gateway spend by user
 
 ### Code samples
@@ -342,7 +435,7 @@ curl -X GET http://coder-server:8080/api/v2/ai-gateway/spend/users \
 
 `GET /api/v2/ai-gateway/spend/users`
 
-Returns AI Gateway spend for every user with finished requests in the window, most expensive first. Requires permission to read any AI Gateway interception.
+Returns AI Gateway spend for every user with finished requests in the window. Defaults to most expensive first. Requires permission to read any AI Gateway interception.
 start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
 
 ### Parameters
@@ -352,8 +445,17 @@ start_date is raised to the AI Gateway data retention boundary when it falls ear
 | `start_date` | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
 | `end_date`   | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
 | `search`     | query | string            | false    | Case-insensitive match on username or name                                                                    |
+| `sort_by`    | query | string            | false    | Sort column                                                                                                   |
+| `sort_order` | query | string            | false    | Sort direction                                                                                                |
 | `limit`      | query | integer           | false    | Page limit (default 10, maximum 100)                                                                          |
 | `offset`     | query | integer           | false    | Page offset                                                                                                   |
+
+#### Enumerated Values
+
+| Parameter    | Value(s)                                                                                                                                                  |
+|--------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `sort_by`    | `cache_read_input_tokens`, `cache_write_input_tokens`, `input_tokens`, `output_tokens`, `request_count`, `session_count`, `total_cost_micros`, `username` |
+| `sort_order` | `asc`, `desc`                                                                                                                                             |
 
 ### Example responses
 
@@ -404,7 +506,7 @@ curl -X GET http://coder-server:8080/api/v2/ai-gateway/spend/users/{user}/summar
 
 `GET /api/v2/ai-gateway/spend/users/{user}/summary`
 
-Returns the user's AI Gateway spend over the window with per-model and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
+Returns the user's AI Gateway spend over the window with per-provider, per-model, and per-client breakdowns. Each breakdown lists at most 100 entries, most expensive first; the totals always cover every request. Requires permission to read any AI Gateway interception.
 start_date is raised to the AI Gateway data retention boundary when it falls earlier, since older records are purged. The response echoes the applied window.
 
 ### Parameters
@@ -448,6 +550,19 @@ start_date is raised to the AI Gateway data retention boundary when it falls ear
       "unpriced_request_count": 0
     }
   ],
+  "by_provider": [
+    {
+      "cache_read_input_tokens": 0,
+      "cache_write_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "provider": "string",
+      "provider_name": "string",
+      "request_count": 0,
+      "total_cost_micros": 0,
+      "unpriced_request_count": 0
+    }
+  ],
   "cache_read_input_tokens": 0,
   "cache_write_input_tokens": 0,
   "client_count": 0,
@@ -455,6 +570,7 @@ start_date is raised to the AI Gateway data retention boundary when it falls ear
   "input_tokens": 0,
   "model_count": 0,
   "output_tokens": 0,
+  "provider_count": 0,
   "request_count": 0,
   "session_count": 0,
   "start_date": "2019-08-24T14:15:22Z",

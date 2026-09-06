@@ -19677,6 +19677,29 @@ func TestGetChatSiteConfigValue(t *testing.T) {
 	require.Equal(t, database.GetChatSiteConfigValueRow{}, value)
 }
 
+func TestAIBridgeSpendSortTies(t *testing.T) {
+	t.Parallel()
+	db, _ := dbtestutil.NewDB(t)
+	ctx := testutil.Context(t, testutil.WaitLong)
+	start := dbtime.Now()
+	end := start.Add(time.Hour)
+	for _, username := range []string{"zulu", "alpha"} {
+		user := dbgen.User(t, db, database.User{Username: username})
+		dbgen.AIBridgeInterception(t, db, database.InsertAIBridgeInterceptionParams{InitiatorID: user.ID, StartedAt: start}, &end)
+	}
+	for _, order := range []string{"asc", "desc"} {
+		for _, offset := range []int32{0, 1} {
+			username := []string{"alpha", "zulu"}[offset]
+			rows, err := db.ListAIBridgeSpendByUser(ctx, database.ListAIBridgeSpendByUserParams{
+				StartDate: start, EndDate: end, SortBy: "request_count", SortOrder: order, PageLimit: 1, PageOffset: offset,
+			})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			require.Equal(t, username, rows[0].Username)
+		}
+	}
+}
+
 func TestAIBridgeSpend(t *testing.T) {
 	t.Parallel()
 	db, _ := dbtestutil.NewDB(t)
@@ -19775,7 +19798,7 @@ func TestAIBridgeSpend(t *testing.T) {
 		Model:           "gpt-4",
 		StartedAt:       start,
 		Client:          sql.NullString{String: "cursor", Valid: true},
-		ClientSessionID: sql.NullString{String: "sess-b1", Valid: true},
+		ClientSessionID: sql.NullString{String: "sess-a1", Valid: true},
 	}, finished(start))
 	priced(b1.ID, 3000, 300, 100, 0, 0)
 
@@ -19890,6 +19913,72 @@ func TestAIBridgeSpend(t *testing.T) {
 		require.Len(t, second, 1)
 		require.Equal(t, alice.ID, second[0].UserID)
 		require.EqualValues(t, 2, second[0].TotalCount)
+	})
+
+	for _, tc := range []struct {
+		sortBy string
+		low    uuid.UUID
+		high   uuid.UUID
+	}{
+		{"username", alice.ID, bob.ID},
+		{"total_cost_micros", alice.ID, bob.ID},
+		{"request_count", bob.ID, alice.ID},
+		{"session_count", bob.ID, alice.ID},
+		{"input_tokens", alice.ID, bob.ID},
+		{"output_tokens", alice.ID, bob.ID},
+		{"cache_read_input_tokens", bob.ID, alice.ID},
+		{"cache_write_input_tokens", bob.ID, alice.ID},
+	} {
+		for _, order := range []string{"asc", "desc"} {
+			t.Run("Sort/"+tc.sortBy+"/"+order, func(t *testing.T) {
+				t.Parallel()
+				ctx := testutil.Context(t, testutil.WaitLong)
+				want := []uuid.UUID{tc.low, tc.high}
+				if order == "desc" {
+					want[0], want[1] = want[1], want[0]
+				}
+				for _, offset := range []int32{0, 1} {
+					id := want[offset]
+					rows, err := db.ListAIBridgeSpendByUser(ctx, database.ListAIBridgeSpendByUserParams{
+						StartDate: start, EndDate: end, SortBy: tc.sortBy, SortOrder: order,
+						PageLimit: 1, PageOffset: offset,
+					})
+					require.NoError(t, err)
+					require.Len(t, rows, 1)
+					require.EqualValues(t, 2, rows[0].TotalCount)
+					require.Equal(t, id, rows[0].UserID)
+				}
+			})
+		}
+	}
+
+	t.Run("GlobalSummary", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitLong)
+		got, err := db.GetAIBridgeSpendUserSummary(ctx, database.GetAIBridgeSpendUserSummaryParams{StartDate: start, EndDate: end})
+		require.NoError(t, err)
+		require.Equal(t, database.GetAIBridgeSpendUserSummaryRow{
+			TotalCostMicros: 4700, RequestCount: 4, UnpricedRequestCount: 1, SessionCount: 3,
+			InputTokens: 455, OutputTokens: 180, CacheReadInputTokens: 10, CacheWriteInputTokens: 5,
+		}, got)
+		providers, err := db.ListAIBridgeSpendByUserProvider(ctx, database.ListAIBridgeSpendByUserProviderParams{StartDate: start, EndDate: end, LimitCount: 10})
+		require.NoError(t, err)
+		require.Equal(t, []database.ListAIBridgeSpendByUserProviderRow{
+			{Provider: "openai", ProviderName: "openai-main", TotalCostMicros: 3200, RequestCount: 2, UnpricedRequestCount: 1, InputTokens: 335, OutputTokens: 120, TotalCount: 2},
+			{Provider: "anthropic", ProviderName: "anthropic-main", TotalCostMicros: 1500, RequestCount: 2, InputTokens: 120, OutputTokens: 60, CacheReadInputTokens: 10, CacheWriteInputTokens: 5, TotalCount: 2},
+		}, providers)
+		models, err := db.ListAIBridgeSpendByUserModel(ctx, database.ListAIBridgeSpendByUserModelParams{StartDate: start, EndDate: end, LimitCount: 10})
+		require.NoError(t, err)
+		require.Len(t, models, 2)
+		require.EqualValues(t, 3200, models[0].TotalCostMicros)
+		require.EqualValues(t, 1500, models[1].TotalCostMicros)
+		clients, err := db.ListAIBridgeSpendByUserClient(ctx, database.ListAIBridgeSpendByUserClientParams{StartDate: start, EndDate: end, LimitCount: 10})
+		require.NoError(t, err)
+		require.Len(t, clients, 3)
+		require.EqualValues(t, 3200, clients[0].TotalCostMicros)
+		require.EqualValues(t, 2, clients[0].SessionCount)
+		require.EqualValues(t, 1500, clients[1].TotalCostMicros)
+		require.Zero(t, clients[2].TotalCostMicros)
 	})
 
 	t.Run("UserSummary", func(t *testing.T) {
