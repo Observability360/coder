@@ -27,7 +27,6 @@ import (
 	"github.com/coder/coder/v2/coderd/searchquery"
 	"github.com/coder/coder/v2/coderd/telemetry"
 	"github.com/coder/coder/v2/coderd/userpassword"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
 )
@@ -224,6 +223,7 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 			CompanyName: createUser.TrialInfo.CompanyName,
 			Country:     createUser.TrialInfo.Country,
 			Developers:  createUser.TrialInfo.Developers,
+			Source:      codersdk.LicensorTrialSourceNewUser,
 		})
 		if err != nil {
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -253,7 +253,7 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 			Password: createUser.Password,
 			// There's no reason to create the first user as dormant, since you have
 			// to login immediately anyways.
-			UserStatus:      ptr.Ref(codersdk.UserStatusActive),
+			UserStatus:      new(codersdk.UserStatusActive),
 			OrganizationIDs: []uuid.UUID{defaultOrg.ID},
 		},
 		LoginType:          database.LoginTypePassword,
@@ -1767,11 +1767,8 @@ func (api *API) userRoles(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// TODO: Replace this with "GetAuthorizationUserRoles"
-	// Stored role arrays may retain retired built-in role names until a
-	// cleanup migration lands. Hide them so consumers do not display or
-	// resubmit them.
 	resp := codersdk.UserRoles{
-		Roles:             slices.DeleteFunc(slices.Clone(user.RBACRoles), rbac.IsRetiredRoleName),
+		Roles:             user.RBACRoles,
 		OrganizationRoles: make(map[uuid.UUID][]string),
 	}
 
@@ -1790,7 +1787,7 @@ func (api *API) userRoles(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, mem := range memberships {
-		resp.OrganizationRoles[mem.OrganizationMember.OrganizationID] = slices.DeleteFunc(slices.Clone(mem.OrganizationMember.Roles), rbac.IsRetiredRoleName)
+		resp.OrganizationRoles[mem.OrganizationMember.OrganizationID] = mem.OrganizationMember.Roles
 	}
 
 	httpapi.Write(ctx, rw, http.StatusOK, resp)
