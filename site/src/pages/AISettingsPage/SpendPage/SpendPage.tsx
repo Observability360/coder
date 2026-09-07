@@ -8,7 +8,10 @@ import {
 	paginatedAIGatewaySpendUsers,
 } from "#/api/queries/aiBridge";
 import { user } from "#/api/queries/users";
-import type { AIGatewaySpendUserSummary } from "#/api/typesGenerated";
+import type {
+	AIGatewaySpendFilter,
+	AIGatewaySpendUserSummary,
+} from "#/api/typesGenerated";
 import {
 	type DateRangeValue,
 	toBoundary,
@@ -18,8 +21,12 @@ import { useAuthenticated } from "#/hooks/useAuthenticated";
 import { usePaginatedQuery } from "#/hooks/usePaginatedQuery";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
 import { RequirePermission } from "#/modules/permissions/RequirePermission";
+import { useClientFilterMenu } from "#/pages/AIBridgePage/filters/ClientFilter";
+import { useModelFilterMenu } from "#/pages/AIBridgePage/filters/ModelFilter";
+import { useProviderFilterMenu } from "#/pages/AIBridgePage/filters/ProviderFilter";
 import { getAIBridgePermissions } from "#/pages/AIBridgePage/getAIBridgePermissions";
 import { pageTitle } from "#/utils/page";
+import type { SpendDimensions } from "./components/SpendFilters";
 import {
 	spendListSearchFromState,
 	userSearchParam,
@@ -63,23 +70,50 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 	const location = useLocation();
 	const navigate = useNavigate();
 
-	const searchFilter = searchParams.get("search") ?? "";
-	const debouncedSearch = useDebouncedValue(searchFilter, SEARCH_DEBOUNCE_MS);
-
-	const setSearchFilter = (value: string) => {
+	// Filter changes restart pagination and keep the drill-in's origin state so
+	// Back still knows which list entry lies beneath it.
+	const setFilterParams = (updates: Record<string, string | undefined>) => {
 		setSearchParams(
 			(prev) => {
 				const next = new URLSearchParams(prev);
-				if (value) {
-					next.set("search", value);
-				} else {
-					next.delete("search");
+				for (const [key, value] of Object.entries(updates)) {
+					if (value) {
+						next.set(key, value);
+					} else {
+						next.delete(key);
+					}
 				}
 				next.delete("page");
 				return next;
 			},
-			{ replace: true },
+			{ replace: true, state: location.state },
 		);
+	};
+
+	const searchFilter = searchParams.get("search") ?? "";
+	const debouncedSearch = useDebouncedValue(searchFilter, SEARCH_DEBOUNCE_MS);
+
+	const dimensions: SpendDimensions = {
+		provider_name: searchParams.get("provider_name") || undefined,
+		client: searchParams.get("client") || undefined,
+		model: searchParams.get("model") || undefined,
+	};
+	const filterMenus = {
+		provider: useProviderFilterMenu({
+			value: dimensions.provider_name,
+			onChange: (option) => setFilterParams({ provider_name: option?.value }),
+			enabled: canViewSpend,
+		}),
+		client: useClientFilterMenu({
+			value: dimensions.client,
+			onChange: (option) => setFilterParams({ client: option?.value }),
+			enabled: canViewSpend,
+		}),
+		model: useModelFilterMenu({
+			value: dimensions.model,
+			onChange: (option) => setFilterParams({ model: option?.value }),
+			enabled: canViewSpend,
+		}),
 	};
 
 	const startDateParam = searchParams.get(startDateSearchParam)?.trim() ?? "";
@@ -106,26 +140,19 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 		}
 	}
 
-	const dateRangeParams = {
+	const spendFilter: AIGatewaySpendFilter = {
 		start_date: dateRange.startDate.toISOString(),
 		end_date: dateRange.endDate.toISOString(),
+		...dimensions,
 	};
 
 	// DateRangePicker already emits exclusive API boundaries (midnight after
 	// the picked day, or the next hour when the picked day is today).
-	const onDateRangeChange = (value: DateRangeValue) => {
-		setSearchParams(
-			(prev) => {
-				const next = new URLSearchParams(prev);
-				next.set(startDateSearchParam, value.startDate.toISOString());
-				next.set(endDateSearchParam, value.endDate.toISOString());
-				next.delete("page");
-				return next;
-			},
-			// Keep the drill-in's origin state across range changes.
-			{ replace: true, state: location.state },
-		);
-	};
+	const onDateRangeChange = (value: DateRangeValue) =>
+		setFilterParams({
+			[startDateSearchParam]: value.startDate.toISOString(),
+			[endDateSearchParam]: value.endDate.toISOString(),
+		});
 
 	const selectedUserId = searchParams.get(userSearchParam) || null;
 
@@ -133,7 +160,7 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 	// fetching it there.
 	const usersQuery = usePaginatedQuery({
 		...paginatedAIGatewaySpendUsers({
-			...dateRangeParams,
+			...spendFilter,
 			search: debouncedSearch,
 			...spendUsersSort(searchParams),
 		}),
@@ -149,8 +176,8 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 
 	const summaryQuery = useQuery<AIGatewaySpendUserSummary>({
 		...(selectedUserId
-			? aiGatewaySpendUserSummary(selectedUserId, dateRangeParams)
-			: aiGatewaySpendSummary(dateRangeParams)),
+			? aiGatewaySpendUserSummary(selectedUserId, spendFilter)
+			: aiGatewaySpendSummary(spendFilter)),
 		enabled: canViewSpend,
 	});
 
@@ -163,8 +190,10 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 				now={now?.toDate()}
 				dateRange={dateRange}
 				onDateRangeChange={onDateRangeChange}
+				dimensions={dimensions}
+				filterMenus={filterMenus}
 				searchFilter={searchFilter}
-				onSearchFilterChange={setSearchFilter}
+				onSearchFilterChange={(value) => setFilterParams({ search: value })}
 				usersQuery={usersQuery}
 				drillInUserId={selectedUserId}
 				drillInUser={selectedUserQuery.data ?? null}

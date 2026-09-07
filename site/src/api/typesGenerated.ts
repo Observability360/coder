@@ -369,6 +369,19 @@ export interface AIGatewaySpendClientBreakdown extends AIGatewaySpendTotals {
 
 // From codersdk/aibridge.go
 /**
+ * AIGatewaySpendFilter narrows an AI Gateway spend query to a window and,
+ * optionally, to requests through one provider, client, or model. Empty
+ * dimensions match every request. Client matches the same "Unknown" bucket the
+ * breakdowns report for requests without a recorded client.
+ */
+export interface AIGatewaySpendFilter extends AIGatewaySpendWindow {
+	readonly provider_name?: string;
+	readonly client?: string;
+	readonly model?: string;
+}
+
+// From codersdk/aibridge.go
+/**
  * AIGatewaySpendModelBreakdown is spend on a single model.
  */
 export interface AIGatewaySpendModelBreakdown extends AIGatewaySpendUsage {
@@ -473,7 +486,7 @@ export interface AIGatewaySpendUserSummary extends AIGatewaySpendTotals {
  * AIGatewaySpendUsersFilter filters the per-user AI Gateway spend list. The
  * list is offset paginated only; it has no cursor.
  */
-export interface AIGatewaySpendUsersFilter extends AIGatewaySpendWindow {
+export interface AIGatewaySpendUsersFilter extends AIGatewaySpendFilter {
 	/**
 	 * Sorting defaults to total_cost_micros descending.
 	 */

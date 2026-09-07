@@ -3097,7 +3097,7 @@ class ApiMethods {
 	};
 
 	getAIGatewaySpendSummary = async (
-		params: TypesGen.AIGatewaySpendWindow,
+		params: TypesGen.AIGatewaySpendFilter,
 	): Promise<TypesGen.AIGatewaySpendUserSummary> => {
 		const url = getURLWithSearchParams(
 			`${aiGatewayPath}/spend/summary`,
@@ -3110,7 +3110,7 @@ class ApiMethods {
 
 	getAIGatewaySpendUserSummary = async (
 		user: string,
-		params: TypesGen.AIGatewaySpendWindow,
+		params: TypesGen.AIGatewaySpendFilter,
 	): Promise<TypesGen.AIGatewaySpendUserSummary> => {
 		const url = getURLWithSearchParams(
 			`${aiGatewayPath}/spend/users/${encodeURIComponent(user)}/summary`,

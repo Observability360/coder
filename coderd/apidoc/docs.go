@@ -901,6 +901,24 @@ const docTemplate = `{
                         "description": "Exclusive upper bound (RFC3339). Defaults to now.",
                         "name": "end_date",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests through this provider configuration name",
+                        "name": "provider_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests from this client. Unknown matches requests without a recorded client.",
+                        "name": "client",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests for this model",
+                        "name": "model",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -942,6 +960,24 @@ const docTemplate = `{
                         "format": "date-time",
                         "description": "Exclusive upper bound (RFC3339). Defaults to now.",
                         "name": "end_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests through this provider configuration name",
+                        "name": "provider_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests from this client. Unknown matches requests without a recorded client.",
+                        "name": "client",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests for this model",
+                        "name": "model",
                         "in": "query"
                     },
                     {
@@ -1037,6 +1073,24 @@ const docTemplate = `{
                         "format": "date-time",
                         "description": "Exclusive upper bound (RFC3339). Defaults to now.",
                         "name": "end_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests through this provider configuration name",
+                        "name": "provider_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests from this client. Unknown matches requests without a recorded client.",
+                        "name": "client",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only count requests for this model",
+                        "name": "model",
                         "in": "query"
                     }
                 ],

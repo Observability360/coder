@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import type * as TypesGen from "#/api/typesGenerated";
+import { MockMenu } from "#/components/Filter/storyHelpers";
 import { mockPaginationResultBase } from "#/components/PaginationWidget/PaginationContainer.mocks";
 import {
 	MockAIGatewaySpendUser,
@@ -91,6 +92,8 @@ const meta = {
 		isEntitled: true,
 		isEnabled: true,
 		dateRange: defaultDateRange,
+		dimensions: {},
+		filterMenus: { provider: MockMenu, client: MockMenu, model: MockMenu },
 		searchFilter: "",
 		usersQuery: mockUsersQuery({ data: mockUsersResponse }),
 		drillInUserId: null,
@@ -160,7 +163,7 @@ export const Empty: Story = {
 		const canvas = within(canvasElement);
 		await expect(canvas.getByText("AI spend")).toBeVisible();
 		await expect(
-			canvas.getByText("No AI Gateway spend for this period."),
+			canvas.getByText("No AI Gateway spend matches these filters."),
 		).toBeVisible();
 	},
 };
@@ -515,6 +518,47 @@ export const DrillIn: Story = {
 
 		await userEvent.click(canvas.getByRole("button", { name: "Back" }));
 		expect(args.onClearSelectedUser).toHaveBeenCalled();
+	},
+};
+
+export const DrillInFiltered: Story = {
+	args: {
+		drillInUserId: MockAIGatewaySpendUser.id,
+		drillInUser: mockUserProfile,
+		summaryData: MockAIGatewaySpendUserSummary,
+		dimensions: { provider_name: "anthropic-main", client: "Claude Code" },
+		filterMenus: {
+			provider: {
+				...MockMenu,
+				selectedOption: { label: "Anthropic", value: "anthropic-main" },
+			},
+			client: {
+				...MockMenu,
+				selectedOption: { label: "Claude Code", value: "Claude Code" },
+			},
+			model: MockMenu,
+		},
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		await expect(
+			canvas.getByRole("button", { name: "Select provider" }),
+		).toHaveTextContent("Anthropic");
+		await expect(
+			canvas.getByRole("button", { name: "Select client" }),
+		).toHaveTextContent("Claude Code");
+		await expect(
+			canvas.getByRole("button", { name: "Select model" }),
+		).toHaveTextContent("All models");
+		const sessionsUrl = new URL(
+			canvas
+				.getByRole("link", { name: "View sessions" })
+				.getAttribute("href") ?? "",
+			"http://localhost",
+		);
+		expect(sessionsUrl.searchParams.get("filter")).toBe(
+			`provider_name:anthropic-main client:"Claude Code" initiator:${MockAIGatewaySpendUser.id} started_after:"2026-02-10T00:00:00Z" started_before:"2026-03-12T00:00:00Z"`,
+		);
 	},
 };
 

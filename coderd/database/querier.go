@@ -1313,6 +1313,9 @@ type sqlcQuerier interface {
 	//   * A session is a distinct (initiator_id, session_id) pair.
 	//     Client is COALESCE(client, 'Unknown').
 	//   * A zero user_id includes every user in summary and breakdown queries.
+	//   * Empty provider_name, model, and client match every request; a
+	//     non-empty value keeps only requests with that exact dimension, with
+	//     client compared after the same 'Unknown' coalesce.
 	ListAIBridgeSpendByUser(ctx context.Context, arg ListAIBridgeSpendByUserParams) ([]ListAIBridgeSpendByUserRow, error)
 	ListAIBridgeSpendByUserClient(ctx context.Context, arg ListAIBridgeSpendByUserClientParams) ([]ListAIBridgeSpendByUserClientRow, error)
 	ListAIBridgeSpendByUserModel(ctx context.Context, arg ListAIBridgeSpendByUserModelParams) ([]ListAIBridgeSpendByUserModelRow, error)

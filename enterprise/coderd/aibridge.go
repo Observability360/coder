@@ -612,19 +612,29 @@ func (api *API) aiBridgeListClients(rw http.ResponseWriter, r *http.Request) {
 	httpapi.Write(ctx, rw, http.StatusOK, clients)
 }
 
-// aiGatewaySpendWindow parses the optional start_date and end_date query
-// parameters. end_date defaults to now and start_date to 30 days before
-// end_date. Records older than the AI Gateway retention period have been
-// purged, so start is raised to that boundary when it falls earlier; the
-// response echoes the applied window so callers can tell. On invalid input it
-// writes the error response and returns false.
-func (api *API) aiGatewaySpendWindow(rw http.ResponseWriter, r *http.Request) (start, end time.Time, ok bool) {
+// aiGatewaySpendFilter is the parsed spend query: the applied window plus the
+// optional provider, client, and model dimensions, where an empty dimension
+// matches every request.
+type aiGatewaySpendFilter struct {
+	start, end   time.Time
+	providerName string
+	client       string
+	model        string
+}
+
+// aiGatewaySpendFilter parses the optional start_date, end_date,
+// provider_name, client, and model query parameters. end_date defaults to now
+// and start_date to 30 days before end_date. Records older than the AI Gateway
+// retention period have been purged, so start is raised to that boundary when
+// it falls earlier; the response echoes the applied window so callers can
+// tell. On invalid input it writes the error response and returns false.
+func (api *API) aiGatewaySpendFilter(rw http.ResponseWriter, r *http.Request) (aiGatewaySpendFilter, bool) {
 	ctx := r.Context()
 	query := r.URL.Query()
 	now := api.Clock.Now().UTC()
 	parser := httpapi.NewQueryParamParser()
-	end = parser.Time3339Nano(query, now, "end_date")
-	start = parser.Time3339Nano(query, end.Add(-defaultAIGatewaySpendWindow), "start_date")
+	end := parser.Time3339Nano(query, now, "end_date")
+	start := parser.Time3339Nano(query, end.Add(-defaultAIGatewaySpendWindow), "start_date")
 	if len(parser.Errors) == 0 && !start.Before(end) {
 		parser.Errors = append(parser.Errors, codersdk.ValidationError{
 			Field:  "end_date",
@@ -636,7 +646,7 @@ func (api *API) aiGatewaySpendWindow(rw http.ResponseWriter, r *http.Request) (s
 			Message:     "Query parameters have invalid values.",
 			Validations: parser.Errors,
 		})
-		return time.Time{}, time.Time{}, false
+		return aiGatewaySpendFilter{}, false
 	}
 	// A retention of zero disables purging.
 	if retention := api.DeploymentValues.AI.BridgeConfig.Retention.Value(); retention > 0 {
@@ -649,7 +659,13 @@ func (api *API) aiGatewaySpendWindow(rw http.ResponseWriter, r *http.Request) (s
 			}
 		}
 	}
-	return start, end, true
+	return aiGatewaySpendFilter{
+		start:        start,
+		end:          end,
+		providerName: query.Get("provider_name"),
+		client:       query.Get("client"),
+		model:        query.Get("model"),
+	}, true
 }
 
 // aiGatewaySpendUsers lists per-user AI Gateway spend for the deployment.
@@ -663,6 +679,9 @@ func (api *API) aiGatewaySpendWindow(rw http.ResponseWriter, r *http.Request) (s
 // @Tags Enterprise
 // @Param start_date query string false "Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary." format(date-time)
 // @Param end_date query string false "Exclusive upper bound (RFC3339). Defaults to now." format(date-time)
+// @Param provider_name query string false "Only count requests through this provider configuration name"
+// @Param client query string false "Only count requests from this client. Unknown matches requests without a recorded client."
+// @Param model query string false "Only count requests for this model"
 // @Param search query string false "Case-insensitive match on username or name"
 // @Param sort_by query string false "Sort column" Enums(username, total_cost_micros, request_count, session_count, input_tokens, output_tokens, cache_read_input_tokens, cache_write_input_tokens) default(total_cost_micros)
 // @Param sort_order query string false "Sort direction" Enums(asc, desc) default(desc)
@@ -700,7 +719,7 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start, end, ok := api.aiGatewaySpendWindow(rw, r)
+	filter, ok := api.aiGatewaySpendFilter(rw, r)
 	if !ok {
 		return
 	}
@@ -716,17 +735,21 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := api.Database.ListAIBridgeSpendByUser(ctx, database.ListAIBridgeSpendByUserParams{
-		StartDate: start,
-		EndDate:   end,
-		Search:    r.URL.Query().Get("search"),
-		SortBy:    string(sortBy),
-		SortOrder: string(sortOrder),
+	params := database.ListAIBridgeSpendByUserParams{
+		StartDate:    filter.start,
+		EndDate:      filter.end,
+		ProviderName: filter.providerName,
+		Client:       filter.client,
+		Model:        filter.model,
+		Search:       r.URL.Query().Get("search"),
+		SortBy:       string(sortBy),
+		SortOrder:    string(sortOrder),
 		// #nosec G115 - The limit is capped above and the offset is parsed as int32.
 		PageLimit: int32(page.Limit),
 		// #nosec G115 - The limit is capped above and the offset is parsed as int32.
 		PageOffset: int32(page.Offset),
-	})
+	}
+	rows, err := api.Database.ListAIBridgeSpendByUser(ctx, params)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error getting AI Gateway spend.",
@@ -739,15 +762,8 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 	if len(rows) == 0 && page.Offset > 0 {
 		// The window function that carries total_count only rides along on
 		// returned rows, so an overshot page has to read it separately.
-		firstPage, err := api.Database.ListAIBridgeSpendByUser(ctx, database.ListAIBridgeSpendByUserParams{
-			StartDate:  start,
-			EndDate:    end,
-			Search:     r.URL.Query().Get("search"),
-			SortBy:     string(sortBy),
-			SortOrder:  string(sortOrder),
-			PageLimit:  1,
-			PageOffset: 0,
-		})
+		params.PageLimit, params.PageOffset = 1, 0
+		firstPage, err := api.Database.ListAIBridgeSpendByUser(ctx, params)
 		if err != nil {
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 				Message: "Internal error getting AI Gateway spend.",
@@ -785,8 +801,8 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	httpapi.Write(ctx, rw, http.StatusOK, codersdk.AIGatewaySpendUsersResponse{
-		StartDate: start,
-		EndDate:   end,
+		StartDate: filter.start,
+		EndDate:   filter.end,
 		Count:     count,
 		Users:     users,
 	})
@@ -801,6 +817,9 @@ func (api *API) aiGatewaySpendUsers(rw http.ResponseWriter, r *http.Request) {
 // @Tags Enterprise
 // @Param start_date query string false "Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary." format(date-time)
 // @Param end_date query string false "Exclusive upper bound (RFC3339). Defaults to now." format(date-time)
+// @Param provider_name query string false "Only count requests through this provider configuration name"
+// @Param client query string false "Only count requests from this client. Unknown matches requests without a recorded client."
+// @Param model query string false "Only count requests for this model"
 // @Success 200 {object} codersdk.AIGatewaySpendUserSummary
 // @Router /api/v2/ai-gateway/spend/summary [get]
 func (api *API) aiGatewaySpendSummary(rw http.ResponseWriter, r *http.Request) {
@@ -817,6 +836,9 @@ func (api *API) aiGatewaySpendSummary(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, username, or me"
 // @Param start_date query string false "Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary." format(date-time)
 // @Param end_date query string false "Exclusive upper bound (RFC3339). Defaults to now." format(date-time)
+// @Param provider_name query string false "Only count requests through this provider configuration name"
+// @Param client query string false "Only count requests from this client. Unknown matches requests without a recorded client."
+// @Param model query string false "Only count requests for this model"
 // @Success 200 {object} codersdk.AIGatewaySpendUserSummary
 // @Router /api/v2/ai-gateway/spend/users/{user}/summary [get]
 func (api *API) aiGatewaySpendUserSummary(rw http.ResponseWriter, r *http.Request) {
@@ -831,7 +853,7 @@ func (api *API) aiGatewaySpendSummaryForUser(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	start, end, ok := api.aiGatewaySpendWindow(rw, r)
+	filter, ok := api.aiGatewaySpendFilter(rw, r)
 	if !ok {
 		return
 	}
@@ -845,36 +867,48 @@ func (api *API) aiGatewaySpendSummaryForUser(rw http.ResponseWriter, r *http.Req
 	err := api.Database.InTx(func(db database.Store) error {
 		var err error
 		totals, err = db.GetAIBridgeSpendUserSummary(ctx, database.GetAIBridgeSpendUserSummaryParams{
-			UserID:    userID,
-			StartDate: start,
-			EndDate:   end,
+			UserID:       userID,
+			StartDate:    filter.start,
+			EndDate:      filter.end,
+			ProviderName: filter.providerName,
+			Client:       filter.client,
+			Model:        filter.model,
 		})
 		if err != nil {
 			return xerrors.Errorf("get spend summary: %w", err)
 		}
 		byModel, err = db.ListAIBridgeSpendByUserModel(ctx, database.ListAIBridgeSpendByUserModelParams{
-			UserID:     userID,
-			StartDate:  start,
-			EndDate:    end,
-			LimitCount: codersdk.AIGatewaySpendBreakdownLimit,
+			UserID:       userID,
+			StartDate:    filter.start,
+			EndDate:      filter.end,
+			ProviderName: filter.providerName,
+			Client:       filter.client,
+			Model:        filter.model,
+			LimitCount:   codersdk.AIGatewaySpendBreakdownLimit,
 		})
 		if err != nil {
 			return xerrors.Errorf("list spend by model: %w", err)
 		}
 		byClient, err = db.ListAIBridgeSpendByUserClient(ctx, database.ListAIBridgeSpendByUserClientParams{
-			UserID:     userID,
-			StartDate:  start,
-			EndDate:    end,
-			LimitCount: codersdk.AIGatewaySpendBreakdownLimit,
+			UserID:       userID,
+			StartDate:    filter.start,
+			EndDate:      filter.end,
+			ProviderName: filter.providerName,
+			Client:       filter.client,
+			Model:        filter.model,
+			LimitCount:   codersdk.AIGatewaySpendBreakdownLimit,
 		})
 		if err != nil {
 			return xerrors.Errorf("list spend by client: %w", err)
 		}
 		byProvider, err = db.ListAIBridgeSpendByUserProvider(ctx, database.ListAIBridgeSpendByUserProviderParams{
-			UserID:     userID,
-			StartDate:  start,
-			EndDate:    end,
-			LimitCount: codersdk.AIGatewaySpendBreakdownLimit,
+			UserID:       userID,
+			StartDate:    filter.start,
+			EndDate:      filter.end,
+			ProviderName: filter.providerName,
+			Client:       filter.client,
+			Model:        filter.model,
+			LimitCount:   codersdk.AIGatewaySpendBreakdownLimit,
 		})
 		if err != nil {
 			return xerrors.Errorf("list spend by provider: %w", err)
@@ -894,8 +928,8 @@ func (api *API) aiGatewaySpendSummaryForUser(rw http.ResponseWriter, r *http.Req
 	}
 
 	resp := codersdk.AIGatewaySpendUserSummary{
-		StartDate: start,
-		EndDate:   end,
+		StartDate: filter.start,
+		EndDate:   filter.end,
 		AIGatewaySpendTotals: codersdk.AIGatewaySpendTotals{
 			AIGatewaySpendUsage: codersdk.AIGatewaySpendUsage{
 				TotalCostMicros:       totals.TotalCostMicros,

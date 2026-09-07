@@ -98,7 +98,7 @@ export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 		<section className="space-y-6">
 			<SpendSectionHeader
 				title="Spend by user"
-				description="AI Gateway cost and usage for each user in the selected date range."
+				description="AI Gateway cost and usage for each user in the selected period and filters."
 			/>
 			<div className="w-full md:max-w-sm">
 				<SearchField
@@ -146,7 +146,7 @@ export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 							<p className="py-12 text-center text-content-secondary">
 								{searchFilter
 									? "No users match this search."
-									: "No AI Gateway spend for this period."}
+									: "No AI Gateway spend matches these filters."}
 							</p>
 						) : (
 							<PaginationContainer

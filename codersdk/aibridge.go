@@ -507,6 +507,34 @@ func (w AIGatewaySpendWindow) asRequestOption() RequestOption {
 	}
 }
 
+// AIGatewaySpendFilter narrows an AI Gateway spend query to a window and,
+// optionally, to requests through one provider, client, or model. Empty
+// dimensions match every request. Client matches the same "Unknown" bucket the
+// breakdowns report for requests without a recorded client.
+type AIGatewaySpendFilter struct {
+	AIGatewaySpendWindow
+	ProviderName string `json:"provider_name,omitempty"`
+	Client       string `json:"client,omitempty"`
+	Model        string `json:"model,omitempty"`
+}
+
+func (f AIGatewaySpendFilter) asRequestOption() RequestOption {
+	return func(r *http.Request) {
+		f.AIGatewaySpendWindow.asRequestOption()(r)
+		q := r.URL.Query()
+		if f.ProviderName != "" {
+			q.Set("provider_name", f.ProviderName)
+		}
+		if f.Client != "" {
+			q.Set("client", f.Client)
+		}
+		if f.Model != "" {
+			q.Set("model", f.Model)
+		}
+		r.URL.RawQuery = q.Encode()
+	}
+}
+
 // AIGatewaySpendSortBy selects the column used to order users by spend.
 type AIGatewaySpendSortBy string
 
@@ -555,7 +583,7 @@ func (s AIGatewaySpendSortOrder) Valid() bool {
 // AIGatewaySpendUsersFilter filters the per-user AI Gateway spend list. The
 // list is offset paginated only; it has no cursor.
 type AIGatewaySpendUsersFilter struct {
-	AIGatewaySpendWindow
+	AIGatewaySpendFilter
 	// Sorting defaults to total_cost_micros descending.
 	SortBy    AIGatewaySpendSortBy    `json:"sort_by,omitempty"`
 	SortOrder AIGatewaySpendSortOrder `json:"sort_order,omitempty"`
@@ -604,10 +632,10 @@ func (c *Client) AIGatewaySpendUsers(ctx context.Context, filter AIGatewaySpendU
 
 // AIGatewaySpendUserSummary returns one user's AI Gateway spend broken down by
 // provider, model, and client. The user may be an ID, a username, or "me".
-func (c *Client) AIGatewaySpendUserSummary(ctx context.Context, user string, window AIGatewaySpendWindow) (AIGatewaySpendUserSummary, error) {
+func (c *Client) AIGatewaySpendUserSummary(ctx context.Context, user string, filter AIGatewaySpendFilter) (AIGatewaySpendUserSummary, error) {
 	res, err := c.Request(ctx, http.MethodGet,
 		fmt.Sprintf("/api/v2/ai-gateway/spend/users/%s/summary", user),
-		nil, window.asRequestOption(),
+		nil, filter.asRequestOption(),
 	)
 	if err != nil {
 		return AIGatewaySpendUserSummary{}, err
@@ -622,8 +650,8 @@ func (c *Client) AIGatewaySpendUserSummary(ctx context.Context, user string, win
 
 // AIGatewaySpendSummary returns deployment-wide AI Gateway spend broken down
 // by provider, model, and client.
-func (c *Client) AIGatewaySpendSummary(ctx context.Context, window AIGatewaySpendWindow) (AIGatewaySpendUserSummary, error) {
-	res, err := c.Request(ctx, http.MethodGet, "/api/v2/ai-gateway/spend/summary", nil, window.asRequestOption())
+func (c *Client) AIGatewaySpendSummary(ctx context.Context, filter AIGatewaySpendFilter) (AIGatewaySpendUserSummary, error) {
+	res, err := c.Request(ctx, http.MethodGet, "/api/v2/ai-gateway/spend/summary", nil, filter.asRequestOption())
 	if err != nil {
 		return AIGatewaySpendUserSummary{}, err
 	}

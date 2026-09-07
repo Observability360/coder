@@ -1,32 +1,29 @@
-import type { FC } from "react";
+import type { FC, ReactNode } from "react";
 import { Link as RouterLink } from "react-router";
 import { getErrorMessage } from "#/api/errors";
 import type * as TypesGen from "#/api/typesGenerated";
 import { AvatarData } from "#/components/Avatar/AvatarData";
 import { Button } from "#/components/Button/Button";
-import {
-	DateRangePicker,
-	type DateRangeValue,
-} from "#/components/DateRangePicker/DateRangePicker";
+import type { DateRangeValue } from "#/components/DateRangePicker/DateRangePicker";
 import { useFilterParamsKey } from "#/components/Filter/Filter";
 import { Link } from "#/components/Link/Link";
 import { Spinner } from "#/components/Spinner/Spinner";
 import { queryWithTimeRange } from "#/pages/AIBridgePage/ListSessionsPage/timeRange";
 import { BackButton } from "./BackButton";
 import { RetentionNotice } from "./RetentionNotice";
+import type { SpendDimensions } from "./SpendFilters";
 import { SpendSectionHeader } from "./SpendSectionHeader";
 import { SpendSummaryView } from "./SpendSummaryView";
 
 interface SpendDrillInViewProps {
 	selectedUser: TypesGen.User | null;
-	now?: Date;
 	isLoading: boolean;
 	error: unknown;
 	onRetry: () => void;
 	onBack: () => void;
-	displayDateRange: DateRangeValue;
+	filters: ReactNode;
+	dimensions: SpendDimensions;
 	queryDateRange: DateRangeValue;
-	onDateRangeChange: (value: DateRangeValue) => void;
 	dateRangeLabel: string;
 	summaryData: TypesGen.AIGatewaySpendUserSummary | undefined;
 	isSummaryLoading: boolean;
@@ -39,14 +36,18 @@ type AppliedWindow = Pick<
 	"start_date" | "end_date"
 >;
 
-// Links to the AI Sessions page for the same user and window. The user ID
-// rather than the username keeps the link pointing at this account even if
-// the username is later reused. The sessions page applies no retention clamp,
-// so the link waits for the applied window from the summary rather than using
-// the requested one.
-const sessionsHref = (userId: string, applied: AppliedWindow) => {
+// Links to the AI Sessions page for the same user, window, and filters. The
+// user ID rather than the username keeps the link pointing at this account
+// even if the username is later reused. The sessions page applies no retention
+// clamp, so the link waits for the applied window from the summary rather than
+// using the requested one.
+const sessionsHref = (
+	userId: string,
+	dimensions: SpendDimensions,
+	applied: AppliedWindow,
+) => {
 	const filter = queryWithTimeRange(
-		{ initiator: userId },
+		{ ...dimensions, initiator: userId },
 		{ start: new Date(applied.start_date), end: new Date(applied.end_date) },
 	);
 	return `/ai-gateway/sessions?${useFilterParamsKey}=${encodeURIComponent(filter)}`;
@@ -61,14 +62,13 @@ const hasEmptyAppliedWindow = (applied: AppliedWindow) =>
 
 export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 	selectedUser,
-	now,
 	isLoading,
 	error,
 	onRetry,
 	onBack,
-	displayDateRange,
+	filters,
+	dimensions,
 	queryDateRange,
-	onDateRangeChange,
 	dateRangeLabel,
 	summaryData,
 	isSummaryLoading,
@@ -76,20 +76,16 @@ export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 	onSummaryRetry,
 }) => {
 	const header = (
-		<div>
-			<BackButton onClick={onBack} />
-			<SpendSectionHeader
-				title="Spend details"
-				description="AI Gateway spend for a single user in the selected date range."
-				actions={
-					<DateRangePicker
-						now={now}
-						value={displayDateRange}
-						onChange={onDateRangeChange}
-					/>
-				}
-			/>
-		</div>
+		<>
+			<div>
+				<BackButton onClick={onBack} />
+				<SpendSectionHeader
+					title="Spend details"
+					description="AI Gateway spend for a single user in the selected period and filters."
+				/>
+			</div>
+			{filters}
+		</>
 	);
 
 	if (isLoading) {
@@ -137,7 +133,9 @@ export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 					<div>{dateRangeLabel}</div>
 					{summaryData && !hasEmptyAppliedWindow(summaryData) && (
 						<Link asChild showExternalIcon={false} size="sm">
-							<RouterLink to={sessionsHref(selectedUser.id, summaryData)}>
+							<RouterLink
+								to={sessionsHref(selectedUser.id, dimensions, summaryData)}
+							>
 								View sessions
 							</RouterLink>
 						</Link>

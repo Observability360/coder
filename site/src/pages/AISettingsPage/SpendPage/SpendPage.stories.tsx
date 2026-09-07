@@ -7,6 +7,7 @@ import type { AIGatewaySpendUser } from "#/api/typesGenerated";
 import {
 	MockAIGatewaySpendUser,
 	MockAIGatewaySpendUserSummary,
+	MockAIProviders,
 	MockUserMember,
 } from "#/testHelpers/entities";
 import {
@@ -91,6 +92,11 @@ const meta = {
 			...MockUserMember,
 			...users.find((user) => user.id === id),
 		}));
+		spyOn(API.experimental, "listAIProviders").mockResolvedValue(
+			MockAIProviders,
+		);
+		spyOn(API, "getAIBridgeClients").mockResolvedValue(["Claude Code"]);
+		spyOn(API, "getAIBridgeModels").mockResolvedValue(["gpt-4o"]);
 	},
 } satisfies Meta<typeof SpendPage>;
 export default meta;
@@ -193,5 +199,52 @@ export const PeriodAppliesToUsersAndBreakdowns: Story = {
 			canvas.getByRole("table", { name: "Spend by provider" }),
 		).toBeVisible();
 		await expect(API.getAIGatewaySpendSummary).toHaveBeenLastCalledWith(window);
+	},
+};
+
+export const ProviderFilterAppliesToUsersBreakdownsAndDrillIn: Story = {
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const body = within(canvasElement.ownerDocument.body);
+		const table = within(
+			await canvas.findByRole("table", { name: "Spend by user" }),
+		);
+		await userEvent.click(canvas.getByRole("button", { name: "Next page" }));
+		await waitFor(() =>
+			expect(table.getAllByRole("row")[1]).toHaveTextContent("User 2"),
+		);
+
+		// Picking a provider filters both sections and returns to page 1.
+		const providerButton = () =>
+			canvas.getByRole("button", { name: "Select provider" });
+		await userEvent.click(providerButton());
+		await userEvent.click(await body.findByRole("option", { name: /OpenAI/ }));
+		await waitFor(() =>
+			expect(API.getAIGatewaySpendUsers).toHaveBeenCalledWith(
+				expect.objectContaining({ provider_name: "openai", offset: 0 }),
+			),
+		);
+		await waitFor(() =>
+			expect(API.getAIGatewaySpendSummary).toHaveBeenLastCalledWith(
+				expect.objectContaining({ provider_name: "openai" }),
+			),
+		);
+		await waitFor(() =>
+			expect(table.getAllByRole("row")[1]).toHaveTextContent("User 12"),
+		);
+		await expect(providerButton()).toHaveTextContent("OpenAI");
+
+		await userEvent.click(await canvas.findByRole("link", { name: "User 12" }));
+		await waitFor(() =>
+			expect(API.getAIGatewaySpendUserSummary).toHaveBeenCalledWith(
+				"user-12",
+				expect.objectContaining({ provider_name: "openai" }),
+			),
+		);
+		await expect(providerButton()).toHaveTextContent("OpenAI");
+
+		await userEvent.click(canvas.getByRole("button", { name: "Back" }));
+		await canvas.findByRole("table", { name: "Spend by user" });
+		await expect(providerButton()).toHaveTextContent("OpenAI");
 	},
 };

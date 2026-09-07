@@ -822,6 +822,9 @@ FROM per_request;
 --   * A session is a distinct (initiator_id, session_id) pair.
 --     Client is COALESCE(client, 'Unknown').
 --   * A zero user_id includes every user in summary and breakdown queries.
+--   * Empty provider_name, model, and client match every request; a
+--     non-empty value keeps only requests with that exact dimension, with
+--     client compared after the same 'Unknown' coalesce.
 
 -- name: ListAIBridgeSpendByUser :many
 WITH per_request AS (
@@ -839,6 +842,9 @@ WITH per_request AS (
 	WHERE i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
+		AND (@provider_name::text = '' OR i.provider_name = @provider_name::text)
+		AND (@model::text = '' OR i.model = @model::text)
+		AND (@client::text = '' OR COALESCE(i.client, 'Unknown') = @client::text)
 	GROUP BY i.id
 ), per_user AS (
 SELECT
@@ -911,6 +917,9 @@ WITH per_request AS (
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
+		AND (@provider_name::text = '' OR i.provider_name = @provider_name::text)
+		AND (@model::text = '' OR i.model = @model::text)
+		AND (@client::text = '' OR COALESCE(i.client, 'Unknown') = @client::text)
 	GROUP BY i.id
 )
 SELECT
@@ -942,6 +951,9 @@ WITH per_request AS (
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
+		AND (@provider_name::text = '' OR i.provider_name = @provider_name::text)
+		AND (@model::text = '' OR i.model = @model::text)
+		AND (@client::text = '' OR COALESCE(i.client, 'Unknown') = @client::text)
 	GROUP BY i.id
 )
 SELECT
@@ -979,6 +991,9 @@ WITH per_request AS (
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
+		AND (@provider_name::text = '' OR i.provider_name = @provider_name::text)
+		AND (@model::text = '' OR i.model = @model::text)
+		AND (@client::text = '' OR COALESCE(i.client, 'Unknown') = @client::text)
 	GROUP BY i.id
 )
 SELECT
@@ -1014,6 +1029,9 @@ WITH per_request AS (
 		AND i.started_at >= @start_date::timestamptz
 		AND i.started_at < @end_date::timestamptz
 		AND i.ended_at IS NOT NULL
+		AND (@provider_name::text = '' OR i.provider_name = @provider_name::text)
+		AND (@model::text = '' OR i.model = @model::text)
+		AND (@client::text = '' OR COALESCE(i.client, 'Unknown') = @client::text)
 	GROUP BY i.id
 )
 SELECT

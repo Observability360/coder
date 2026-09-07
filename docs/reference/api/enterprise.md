@@ -347,10 +347,13 @@ start_date is raised to the AI Gateway data retention boundary when it falls ear
 
 ### Parameters
 
-| Name         | In    | Type              | Required | Description                                                                                                   |
-|--------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
-| `start_date` | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
-| `end_date`   | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
+| Name            | In    | Type              | Required | Description                                                                                                   |
+|-----------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
+| `start_date`    | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
+| `end_date`      | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
+| `provider_name` | query | string            | false    | Only count requests through this provider configuration name                                                  |
+| `client`        | query | string            | false    | Only count requests from this client. Unknown matches requests without a recorded client.                     |
+| `model`         | query | string            | false    | Only count requests for this model                                                                            |
 
 ### Example responses
 
@@ -440,15 +443,18 @@ start_date is raised to the AI Gateway data retention boundary when it falls ear
 
 ### Parameters
 
-| Name         | In    | Type              | Required | Description                                                                                                   |
-|--------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
-| `start_date` | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
-| `end_date`   | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
-| `search`     | query | string            | false    | Case-insensitive match on username or name                                                                    |
-| `sort_by`    | query | string            | false    | Sort column                                                                                                   |
-| `sort_order` | query | string            | false    | Sort direction                                                                                                |
-| `limit`      | query | integer           | false    | Page limit (default 10, maximum 100)                                                                          |
-| `offset`     | query | integer           | false    | Page offset                                                                                                   |
+| Name            | In    | Type              | Required | Description                                                                                                   |
+|-----------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
+| `start_date`    | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
+| `end_date`      | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
+| `provider_name` | query | string            | false    | Only count requests through this provider configuration name                                                  |
+| `client`        | query | string            | false    | Only count requests from this client. Unknown matches requests without a recorded client.                     |
+| `model`         | query | string            | false    | Only count requests for this model                                                                            |
+| `search`        | query | string            | false    | Case-insensitive match on username or name                                                                    |
+| `sort_by`       | query | string            | false    | Sort column                                                                                                   |
+| `sort_order`    | query | string            | false    | Sort direction                                                                                                |
+| `limit`         | query | integer           | false    | Page limit (default 10, maximum 100)                                                                          |
+| `offset`        | query | integer           | false    | Page offset                                                                                                   |
 
 #### Enumerated Values
 
@@ -511,11 +517,14 @@ start_date is raised to the AI Gateway data retention boundary when it falls ear
 
 ### Parameters
 
-| Name         | In    | Type              | Required | Description                                                                                                   |
-|--------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
-| `user`       | path  | string            | true     | User ID, username, or me                                                                                      |
-| `start_date` | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
-| `end_date`   | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
+| Name            | In    | Type              | Required | Description                                                                                                   |
+|-----------------|-------|-------------------|----------|---------------------------------------------------------------------------------------------------------------|
+| `user`          | path  | string            | true     | User ID, username, or me                                                                                      |
+| `start_date`    | query | string(date-time) | false    | Inclusive lower bound (RFC3339). Defaults to 30 days before end_date and is raised to the retention boundary. |
+| `end_date`      | query | string(date-time) | false    | Exclusive upper bound (RFC3339). Defaults to now.                                                             |
+| `provider_name` | query | string            | false    | Only count requests through this provider configuration name                                                  |
+| `client`        | query | string            | false    | Only count requests from this client. Unknown matches requests without a recorded client.                     |
+| `model`         | query | string            | false    | Only count requests for this model                                                                            |
 
 ### Example responses
 

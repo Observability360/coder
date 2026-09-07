@@ -1,9 +1,6 @@
 import type { FC } from "react";
 import type * as TypesGen from "#/api/typesGenerated";
-import {
-	DateRangePicker,
-	type DateRangeValue,
-} from "#/components/DateRangePicker/DateRangePicker";
+import type { DateRangeValue } from "#/components/DateRangePicker/DateRangePicker";
 import type { PaginationResult } from "#/components/PaginationWidget/PaginationContainer";
 import {
 	SettingsHeader,
@@ -14,6 +11,11 @@ import { PremiumPaywallAIGovernance } from "#/modules/paywall/PremiumPaywallAIGo
 import { AIBridgeSetupAlert } from "#/pages/AIBridgePage/AIBridgeSetupAlert";
 import { RetentionNotice } from "./components/RetentionNotice";
 import { SpendDrillInView } from "./components/SpendDrillInView";
+import {
+	type SpendDimensions,
+	type SpendFilterMenus,
+	SpendFilters,
+} from "./components/SpendFilters";
 import { SpendSectionHeader } from "./components/SpendSectionHeader";
 import { SpendSummaryView } from "./components/SpendSummaryView";
 import { SpendUsersTable } from "./components/SpendUsersTable";
@@ -33,6 +35,8 @@ interface SpendPageViewProps {
 	now?: Date;
 	dateRange: DateRangeValue;
 	onDateRangeChange: (value: DateRangeValue) => void;
+	dimensions: SpendDimensions;
+	filterMenus: SpendFilterMenus;
 	searchFilter: string;
 	onSearchFilterChange: (value: string) => void;
 	usersQuery: SpendUsersQuery;
@@ -54,6 +58,8 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 	now,
 	dateRange,
 	onDateRangeChange,
+	dimensions,
+	filterMenus,
 	searchFilter,
 	onSearchFilterChange,
 	usersQuery,
@@ -84,19 +90,26 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 	const dateRangeLabel = formatUsageDateRange(dateRange, {
 		endDateIsExclusive: true,
 	});
+	const filters = (
+		<SpendFilters
+			menus={filterMenus}
+			now={now}
+			dateRange={displayDateRange}
+			onDateRangeChange={onDateRangeChange}
+		/>
+	);
 
 	if (drillInUserId) {
 		return (
 			<SpendDrillInView
 				selectedUser={drillInUser}
-				now={now}
 				isLoading={isDrillInUserLoading}
 				error={drillInUserError}
 				onRetry={onDrillInUserRetry}
 				onBack={onClearSelectedUser}
-				displayDateRange={displayDateRange}
+				filters={filters}
+				dimensions={dimensions}
 				queryDateRange={dateRange}
-				onDateRangeChange={onDateRangeChange}
 				dateRangeLabel={dateRangeLabel}
 				summaryData={summaryData}
 				isSummaryLoading={isSummaryLoading}
@@ -115,16 +128,7 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 				</SettingsHeaderDescription>
 			</SettingsHeader>
 
-			<div className="flex flex-wrap items-center justify-between gap-4">
-				<p className="m-0 text-sm text-content-secondary">
-					Reporting period: {dateRangeLabel}
-				</p>
-				<DateRangePicker
-					now={now}
-					value={displayDateRange}
-					onChange={onDateRangeChange}
-				/>
-			</div>
+			{filters}
 			<SpendUsersTable
 				displayDateRange={displayDateRange}
 				searchFilter={searchFilter}
@@ -134,7 +138,7 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 			<section className="space-y-6">
 				<SpendSectionHeader
 					title="Deployment spend"
-					description="Totals and breakdowns across all users in the selected period, independent of the user search above."
+					description="Totals and breakdowns across all users for the selected period and filters, independent of the user search above."
 				/>
 				{summaryData && (
 					<RetentionNotice
