@@ -201,6 +201,7 @@ export const ApplyCustomRange: Story = {
 		await userEvent.click(await screen.findByRole("option", { name: "AM" }));
 
 		await waitFor(() => {
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
 			expect(applyButton).toBeEnabled();
 		});
 		await userEvent.click(applyButton);

@@ -517,9 +517,15 @@ export const ReasoningEffortInProviderConfiguration: Story = {
 		await userEvent.click(
 			await screen.findByRole("option", { name: "Medium" }),
 		);
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		});
 
 		await userEvent.click(maxSelect);
 		await userEvent.click(await screen.findByRole("option", { name: "Max" }));
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		});
 
 		await userEvent.click(canvas.getByRole("button", { name: /add model/i }));
 		await expect(args.onCreateModel).toHaveBeenCalledWith(
@@ -547,6 +553,9 @@ export const ReasoningEffortValidationError: Story = {
 
 		await userEvent.click(defaultSelect);
 		await userEvent.click(await screen.findByRole("option", { name: "High" }));
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		});
 		await userEvent.click(maxSelect);
 		await userEvent.click(await screen.findByRole("option", { name: "Low" }));
 
@@ -579,12 +588,18 @@ export const GoogleThinkingLevelBudgetMutualExclusion: Story = {
 
 		await userEvent.click(level);
 		await userEvent.click(await screen.findByRole("option", { name: "Low" }));
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		});
 		await expect(budget).toBeDisabled();
 
 		await userEvent.click(level);
 		await userEvent.click(
 			await screen.findByRole("option", { name: "Default" }),
 		);
+		await waitFor(() => {
+			expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+		});
 		await expect(budget).toBeEnabled();
 
 		await userEvent.type(budget, "2048");
