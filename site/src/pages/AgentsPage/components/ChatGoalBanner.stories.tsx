@@ -15,6 +15,7 @@ const goal = (
 	root_chat_id: "chat-1",
 	objective: longGoalObjective,
 	status: "active",
+	continuation_count: 0,
 	created_by_user_id: "user-1",
 	completed_by_agent: false,
 	created_at: storyNow,

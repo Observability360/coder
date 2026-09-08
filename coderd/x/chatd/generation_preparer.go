@@ -456,12 +456,19 @@ func (server *Server) prepareGeneration(
 	}
 	goalBehaviorTurn := chatGoalsEnabled && isRootChat && !isPlanModeTurn && !isExploreSubagent
 	canCompleteGoal := goalBehaviorTurn && activeGoal != nil
-	// complete_goal stays recognized as a stop marker after it commits
-	// the transition mid-turn: the next pass sees a complete goal and no
-	// longer offers the tool, but its persisted successful result must
-	// still finish the turn instead of buying another model call.
+	// complete_goal and block_goal transition the goal before their tool
+	// results are committed, so the turn's next preparation no longer
+	// offers them and a history scan keyed on the offered set would miss
+	// the stop marker and invoke the model again. Keep them recognized
+	// only while the transition belongs to the current turn; on later
+	// turns the recognition is dropped so a same-name dynamic tool can
+	// neither impersonate the built-in stop marker nor stay suppressed
+	// forever.
 	goalStopAfterRecognized := canCompleteGoal ||
-		(goalBehaviorTurn && currentGoal != nil && currentGoal.Status == database.ChatGoalStatusComplete)
+		(goalBehaviorTurn && currentGoal != nil &&
+			(currentGoal.Status == database.ChatGoalStatusBlocked ||
+				currentGoal.Status == database.ChatGoalStatusComplete) &&
+			goalTransitionInCurrentTurn(currentGoal, input.Messages))
 
 	prompt = buildSystemPrompt(
 		prompt,
@@ -516,7 +523,13 @@ func (server *Server) prepareGeneration(
 			RootChatID: rootChatID,
 			IsRootChat: isRootChat,
 		}))
-		if canCompleteGoal {
+		// Registration follows stop-after recognition, not just the
+		// active goal: after a crash between the goal transition commit
+		// and its tool-result commit, the next preparation must still
+		// dispatch the pending call to the tool's replay handler
+		// instead of failing it as an unknown tool, which would let the
+		// model run again past the stop marker.
+		if goalStopAfterRecognized {
 			var fence *chattool.GoalToolFence
 			if chat.WorkerID.Valid && chat.RunnerID.Valid {
 				fence = &chattool.GoalToolFence{
@@ -525,7 +538,7 @@ func (server *Server) prepareGeneration(
 					HistoryVersion: chat.HistoryVersion,
 				}
 			}
-			tools = append(tools, chattool.CompleteGoal(server.db, chattool.GoalToolOptions{
+			goalToolOptions := chattool.GoalToolOptions{
 				ChatID:     chat.ID,
 				RootChatID: rootChatID,
 				IsRootChat: true,
@@ -533,7 +546,11 @@ func (server *Server) prepareGeneration(
 				OnGoalUpdated: func(_ context.Context, updatedChat database.Chat, _ database.ChatGoal) {
 					server.publishChatGoalChange(updatedChat)
 				},
-			}))
+			}
+			tools = append(tools,
+				chattool.CompleteGoal(server.db, goalToolOptions),
+				chattool.BlockGoal(server.db, goalToolOptions),
+			)
 		}
 	}
 	if isPlanModeTurn && isRootChat {
@@ -596,7 +613,7 @@ func (server *Server) prepareGeneration(
 		}))
 	}
 
-	exclusiveToolNames := exclusiveGenerationToolNames(advisorRuntime != nil, canCompleteGoal)
+	exclusiveToolNames := exclusiveGenerationToolNames(advisorRuntime != nil, goalStopAfterRecognized)
 
 	builtinToolNames := make(map[string]bool, len(tools))
 	for _, t := range tools {
@@ -624,7 +641,10 @@ func (server *Server) prepareGeneration(
 
 	var reservedGoalToolNames map[string]bool
 	if goalStopAfterRecognized {
-		reservedGoalToolNames = map[string]bool{chattool.CompleteGoalToolName: true}
+		reservedGoalToolNames = map[string]bool{
+			chattool.CompleteGoalToolName: true,
+			chattool.BlockGoalToolName:    true,
+		}
 	}
 	tools, dynamicToolNames, err := appendDynamicTools(ctx, logger, tools, chat.DynamicTools, currentPlanMode, chat.Mode, reservedGoalToolNames)
 	if err != nil {
@@ -816,6 +836,23 @@ func (server *Server) prepareGeneration(
 	}, nil
 }
 
+// goalTransitionInCurrentTurn reports whether the current goal's last
+// mutation happened during the turn the loaded history generates for,
+// meaning at or after the turn's triggering user message. The boundary
+// is lastUserPromptIndex, not the last user-role row: hook context rows
+// reuse the user role and are persisted after the transition, so they
+// must not disarm recognition mid-turn. Both timestamps come from the
+// database clock and the mutation transaction can only start after the
+// trigger message committed, so the comparison cannot invert across
+// turns.
+func goalTransitionInCurrentTurn(goal *database.ChatGoal, messages []database.ChatMessage) bool {
+	index := lastUserPromptIndex(messages)
+	if index < 0 {
+		return false
+	}
+	return !goal.UpdatedAt.Before(messages[index].CreatedAt)
+}
+
 func latestPromptUsage(messages []database.ChatMessage) fantasy.Usage {
 	for i := len(messages) - 1; i >= 0; i-- {
 		usage := usageFromMessage(messages[i])
@@ -839,17 +876,19 @@ func shouldCompactPromptUsage(usage fantasy.Usage, contextLimit int64, threshold
 }
 
 // exclusiveGenerationToolNames lists tools that must be a batch's only
-// call. complete_goal is exclusive so a mixed batch cannot commit the
-// goal and then park the chat in requires_action for a stale action.
+// call. The goal mutation tools are exclusive so a mixed batch cannot
+// mutate the goal and then park the chat in requires_action for a
+// stale action.
 //
-//nolint:revive // hasAdvisor and canCompleteGoal are domain capabilities of the turn, not control coupling.
-func exclusiveGenerationToolNames(hasAdvisor bool, canCompleteGoal bool) map[string]bool {
+//nolint:revive // hasAdvisor and goalToolsRegistered are domain capabilities of the turn, not control coupling.
+func exclusiveGenerationToolNames(hasAdvisor bool, goalToolsRegistered bool) map[string]bool {
 	names := map[string]bool{}
 	if hasAdvisor {
 		names[chatadvisor.ToolName] = true
 	}
-	if canCompleteGoal {
+	if goalToolsRegistered {
 		names[chattool.CompleteGoalToolName] = true
+		names[chattool.BlockGoalToolName] = true
 	}
 	if len(names) == 0 {
 		return nil

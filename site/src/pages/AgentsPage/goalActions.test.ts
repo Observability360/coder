@@ -8,6 +8,7 @@ describe("runGoalAction", () => {
 		root_chat_id: "chat-1",
 		objective: "Fix the release blocker",
 		status,
+		continuation_count: 0,
 		created_by_user_id: "user-1",
 		completed_by_agent: false,
 		created_at: "2026-05-22T00:00:00Z",
