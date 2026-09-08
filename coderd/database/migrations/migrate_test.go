@@ -1190,6 +1190,265 @@ func TestMigration000475AgentsAccessOrgRole(t *testing.T) {
 	)
 }
 
+//nolint:tparallel,paralleltest // Subtests share one database with transaction-local fixtures.
+func TestMigration000590WorkspaceAgentSessionCounts(t *testing.T) {
+	t.Parallel()
+
+	const priorMigrationVersion = 589
+
+	sqlDB := testSQLDB(t)
+	next, err := migrations.Stepper(sqlDB)
+	require.NoError(t, err)
+	for {
+		version, more, err := next()
+		require.NoError(t, err)
+		if !more {
+			t.Fatalf("migration %d not found", priorMigrationVersion)
+		}
+		if version == priorMigrationVersion {
+			break
+		}
+	}
+
+	ctx := testutil.Context(t, testutil.WaitSuperLong)
+	migrationSQL, err := os.ReadFile("000590_workspace_agent_session_counts.up.sql")
+	require.NoError(t, err)
+
+	// Everything the rollup has not consumed converts, no matter how far the
+	// watermark lags. Rows the rollup already consumed convert to '{}': the
+	// insights queries read them from template_usage_stats instead. wantCounts
+	// is ordered oldest row first.
+	tests := []struct {
+		name              string
+		statsAgeHours     []int
+		sessionCount      int
+		watermarkAgeHours []int
+		wantCounts        []string
+	}{
+		{name: "empty database"},
+		{name: "no watermark and brief activity", statsAgeHours: []int{0}, sessionCount: 2, wantCounts: []string{`{"vscode": 2}`}},
+		{name: "no watermark and idle stats", statsAgeHours: []int{0}, wantCounts: []string{`{}`}},
+		{name: "no watermark and a long activity backlog", statsAgeHours: []int{48, 0}, sessionCount: 2, wantCounts: []string{`{"vscode": 2}`, `{"vscode": 2}`}},
+		// Without a watermark there is nothing in template_usage_stats to fall
+		// back on, so even ancient activity converts rather than roll up as
+		// zero minutes later.
+		{name: "no watermark and expired activity", statsAgeHours: []int{181 * 24}, sessionCount: 2, wantCounts: []string{`{"vscode": 2}`}},
+		// A weekend shutoff records nothing while coderd is down, so the
+		// watermark is days old with only the minutes before the shutoff
+		// behind it.
+		{name: "weekend shutoff", statsAgeHours: []int{63}, sessionCount: 2, watermarkAgeHours: []int{64}, wantCounts: []string{`{"vscode": 2}`}},
+		{name: "idle since the last rollup", statsAgeHours: []int{0}, watermarkAgeHours: []int{48}, wantCounts: []string{`{}`}},
+		{name: "stalled rollup", statsAgeHours: []int{47, 0}, sessionCount: 2, watermarkAgeHours: []int{48}, wantCounts: []string{`{"vscode": 2}`, `{"vscode": 2}`}},
+		{name: "activity already rolled up", statsAgeHours: []int{50}, sessionCount: 2, watermarkAgeHours: []int{25}, wantCounts: []string{`{}`}},
+		{name: "fresh watermark", statsAgeHours: []int{0}, sessionCount: 2, watermarkAgeHours: []int{23}, wantCounts: []string{`{"vscode": 2}`}},
+		{name: "latest watermark wins", statsAgeHours: []int{0}, sessionCount: 2, watermarkAgeHours: []int{25, 23}, wantCounts: []string{`{"vscode": 2}`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx, err := sqlDB.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tx.Rollback() })
+
+			for _, ageHours := range tt.statsAgeHours {
+				_, err = tx.ExecContext(ctx, `
+					INSERT INTO workspace_agent_stats (
+						id, created_at, user_id, agent_id, workspace_id, template_id,
+						connection_count, session_count_vscode
+					) VALUES (
+						gen_random_uuid(), statement_timestamp() - $1::bigint * interval '1 hour',
+						gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1, $2
+					)
+				`, ageHours, tt.sessionCount)
+				require.NoError(t, err)
+			}
+
+			for _, ageHours := range tt.watermarkAgeHours {
+				_, err = tx.ExecContext(ctx, `
+					INSERT INTO template_usage_stats (
+						start_time, end_time, template_id, user_id, median_latency_ms,
+						usage_mins, ssh_mins, sftp_mins, reconnecting_pty_mins,
+						vscode_mins, jetbrains_mins, app_usage_mins
+					) VALUES (
+						statement_timestamp() - $1::bigint * interval '1 hour',
+						statement_timestamp() - $1::bigint * interval '1 hour' + interval '30 minutes',
+						gen_random_uuid(), gen_random_uuid(), NULL, 0, 0, 0, 0, 0, 0, NULL
+					)
+				`, ageHours)
+				require.NoError(t, err)
+			}
+
+			_, err = tx.ExecContext(ctx, string(migrationSQL))
+			require.NoError(t, err)
+
+			rows, err := tx.QueryContext(ctx, `SELECT session_counts FROM workspace_agent_stats ORDER BY created_at`)
+			require.NoError(t, err)
+			defer rows.Close()
+			var gotCounts []string
+			for rows.Next() {
+				var sessionCounts []byte
+				require.NoError(t, rows.Scan(&sessionCounts))
+				gotCounts = append(gotCounts, string(sessionCounts))
+			}
+			require.NoError(t, rows.Err())
+			require.Len(t, gotCounts, len(tt.wantCounts))
+			for i, want := range tt.wantCounts {
+				require.JSONEq(t, want, gotCounts[i])
+			}
+		})
+	}
+
+	// The down migration has columns for the four known apps only, so a count
+	// under any other name is lost.
+	t.Run("down restores known apps only", func(t *testing.T) {
+		tx, err := sqlDB.BeginTx(ctx, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = tx.Rollback() })
+
+		_, err = tx.ExecContext(ctx, string(migrationSQL))
+		require.NoError(t, err)
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO workspace_agent_stats (
+				id, created_at, user_id, agent_id, workspace_id, template_id,
+				connection_count, session_counts
+			) VALUES (
+				gen_random_uuid(), statement_timestamp(), gen_random_uuid(),
+				gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1,
+				'{"vscode": 2, "some_future_ide": 3}'::jsonb
+			)
+		`)
+		require.NoError(t, err)
+
+		downSQL, err := os.ReadFile("000590_workspace_agent_session_counts.down.sql")
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, string(downSQL))
+		require.NoError(t, err)
+
+		var vscode, jetbrains, reconnectingPTY, ssh int64
+		err = tx.QueryRowContext(ctx, `
+			SELECT session_count_vscode, session_count_jetbrains,
+				session_count_reconnecting_pty, session_count_ssh
+			FROM workspace_agent_stats
+		`).Scan(&vscode, &jetbrains, &reconnectingPTY, &ssh)
+		require.NoError(t, err)
+		require.EqualValues(t, 2, vscode)
+		require.EqualValues(t, 0, jetbrains)
+		require.EqualValues(t, 0, reconnectingPTY)
+		require.EqualValues(t, 0, ssh)
+	})
+}
+
+func TestMigration000591RemoveTaskNotificationsAndUsage(t *testing.T) {
+	t.Parallel()
+
+	const migrationVersion = 591
+	sqlDB := testSQLDB(t)
+	next, err := migrations.Stepper(sqlDB)
+	require.NoError(t, err)
+	for {
+		version, more, err := next()
+		require.NoError(t, err)
+		if !more {
+			t.Fatalf("migration %d not found", migrationVersion)
+		}
+		if version == migrationVersion-1 {
+			break
+		}
+	}
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	userID, bridgeUserID, orgID := uuid.New(), uuid.New(), uuid.New()
+	taskTemplateIDs := pq.StringArray{
+		"bd4b7168-d05e-4e19-ad0f-3593b77aa90f",
+		"d4a6271c-cced-4ed0-84ad-afd02a9c7799",
+		"8c5a4d12-9f7e-4b3a-a1c8-6e4f2d9b5a7c",
+		"3b7e8f1a-4c2d-49a6-b5e9-7f3a1c8d6b4e",
+		"2a74f3d3-ab09-4123-a4a5-ca238f4f65a1",
+		"843ee9c3-a8fb-4846-afa9-977bec578649",
+	}
+	const otherTemplateID = "281fdf73-c6d6-4cbb-8ff5-888baf8a2fff"
+
+	_, err = sqlDB.ExecContext(ctx, `
+		INSERT INTO organizations (id, name, display_name, description, created_at, updated_at, default_org_member_roles)
+		VALUES ($1, $1::uuid::text, 'Notifications', '', $2, $2, '{}')`, orgID, now)
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, `
+		INSERT INTO users (id, username, email, hashed_password, created_at, updated_at)
+		VALUES ($1, $1::uuid::text, $1::uuid::text || '@test.com', '', $3, $3),
+		       ($2, $2::uuid::text, $2::uuid::text || '@test.com', '', $3, $3)`, userID, bridgeUserID, now)
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, `
+		INSERT INTO notification_preferences (user_id, notification_template_id, disabled)
+		VALUES ($1, $2, true), ($1, $3, true)`, userID, taskTemplateIDs[0], otherTemplateID)
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, `
+		INSERT INTO user_configs (user_id, key, value)
+		VALUES ($1, 'preference_task_notification_alert_dismissed', 'true')`, userID)
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, `
+		INSERT INTO ai_seat_state (user_id, first_used_at, last_used_at, last_event_type, last_event_description, updated_at)
+		VALUES ($1, $3, $3, 'task', 'task usage', $3),
+		       ($2, $3, $3, 'aibridge', 'bridge usage', $3)`, userID, bridgeUserID, now)
+	require.NoError(t, err)
+
+	var count int
+	const taskTemplatesQuery = "SELECT count(*) FROM notification_templates WHERE id = ANY($1::uuid[])"
+	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
+	require.Equal(t, 6, count)
+
+	version, _, err := next()
+	require.NoError(t, err)
+	require.EqualValues(t, migrationVersion, version)
+
+	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT count(*) FROM notification_templates WHERE id = $1", otherTemplateID).Scan(&count))
+	require.Equal(t, 1, count)
+	var preferences pq.StringArray
+	require.NoError(t, sqlDB.QueryRowContext(ctx,
+		"SELECT ARRAY(SELECT notification_template_id::text FROM notification_preferences WHERE user_id = $1)", userID).Scan(&preferences))
+	require.Equal(t, pq.StringArray{otherTemplateID}, preferences)
+	require.NoError(t, sqlDB.QueryRowContext(ctx,
+		"SELECT count(*) FROM user_configs WHERE user_id = $1 AND key = 'preference_task_notification_alert_dismissed'", userID).Scan(&count))
+	require.Zero(t, count)
+	for id, description := range map[uuid.UUID]string{userID: "task usage", bridgeUserID: "bridge usage"} {
+		var event, gotDescription string
+		var firstUsed, lastUsed, updated time.Time
+		require.NoError(t, sqlDB.QueryRowContext(ctx, `
+			SELECT last_event_type, last_event_description, first_used_at, last_used_at, updated_at
+			FROM ai_seat_state WHERE user_id = $1`, id).Scan(&event, &gotDescription, &firstUsed, &lastUsed, &updated))
+		require.Equal(t, "aibridge", event)
+		require.Equal(t, description, gotDescription)
+		require.True(t, now.Equal(firstUsed))
+		require.True(t, now.Equal(lastUsed))
+		require.True(t, now.Equal(updated))
+	}
+	var reasons pq.StringArray
+	const reasonsQuery = "SELECT enum_range(NULL::ai_seat_usage_reason)::text[]"
+	require.NoError(t, sqlDB.QueryRowContext(ctx, reasonsQuery).Scan(&reasons))
+	require.Equal(t, pq.StringArray{"aibridge"}, reasons)
+
+	downSQL, err := os.ReadFile("000591_remove_task_notifications_and_usage.down.sql")
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, string(downSQL))
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
+	require.Equal(t, 6, count)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, reasonsQuery).Scan(&reasons))
+	require.Equal(t, pq.StringArray{"aibridge", "task"}, reasons)
+
+	upSQL, err := os.ReadFile("000591_remove_task_notifications_and_usage.up.sql")
+	require.NoError(t, err)
+	_, err = sqlDB.ExecContext(ctx, string(upSQL))
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, reasonsQuery).Scan(&reasons))
+	require.Equal(t, pq.StringArray{"aibridge"}, reasons)
+}
+
 func TestMigration000592RemoveHasAITaskAndTaskBuildReasons(t *testing.T) {
 	t.Parallel()
 
@@ -1478,10 +1737,10 @@ func TestMigration000592TaskBuildReasonRewriteTiming(t *testing.T) {
 	require.Zero(t, count)
 }
 
-func TestMigration000591RemoveTaskNotificationsAndUsage(t *testing.T) {
+func TestMigration000593DropTaskTables(t *testing.T) {
 	t.Parallel()
 
-	const migrationVersion = 591
+	const migrationVersion = 593
 	sqlDB := testSQLDB(t)
 	next, err := migrations.Stepper(sqlDB)
 	require.NoError(t, err)
@@ -1498,94 +1757,96 @@ func TestMigration000591RemoveTaskNotificationsAndUsage(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	userID, bridgeUserID, orgID := uuid.New(), uuid.New(), uuid.New()
-	taskTemplateIDs := pq.StringArray{
-		"bd4b7168-d05e-4e19-ad0f-3593b77aa90f",
-		"d4a6271c-cced-4ed0-84ad-afd02a9c7799",
-		"8c5a4d12-9f7e-4b3a-a1c8-6e4f2d9b5a7c",
-		"3b7e8f1a-4c2d-49a6-b5e9-7f3a1c8d6b4e",
-		"2a74f3d3-ab09-4123-a4a5-ca238f4f65a1",
-		"843ee9c3-a8fb-4846-afa9-977bec578649",
+	orgID, userID, templateID, versionID, jobID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	workspaceID, otherWorkspaceID, taskID := uuid.New(), uuid.New(), uuid.New()
+	fixtures := []struct {
+		query string
+		args  []any
+	}{
+		{
+			"INSERT INTO organizations (id, name, display_name, description, created_at, updated_at, default_org_member_roles) VALUES ($1, $2, '', '', $3, $3, '{}')",
+			[]any{orgID, orgID.String(), now},
+		},
+		{
+			"INSERT INTO users (id, username, email, hashed_password, created_at, updated_at) VALUES ($1, $2, $3, '', $4, $4)",
+			[]any{userID, userID.String(), userID.String() + "@test.com", now},
+		},
+		{
+			"INSERT INTO provisioner_jobs (id, created_at, updated_at, organization_id, initiator_id, provisioner, storage_method, file_id, type, input) VALUES ($1, $2, $2, $3, $4, 'echo', 'file', $1, 'template_version_import', '{}')",
+			[]any{jobID, now, orgID, userID},
+		},
+		{
+			"INSERT INTO template_versions (id, organization_id, name, readme, created_at, updated_at, job_id, created_by) VALUES ($1, $2, 'v1', '', $3, $3, $4, $5)",
+			[]any{versionID, orgID, now, jobID, userID},
+		},
+		{
+			"INSERT INTO templates (id, organization_id, name, created_at, updated_at, provisioner, active_version_id, created_by) VALUES ($1, $2, 'task-removal', $3, $3, 'echo', $4, $5)",
+			[]any{templateID, orgID, now, versionID, userID},
+		},
+		{
+			"UPDATE template_versions SET template_id = $1 WHERE id = $2",
+			[]any{templateID, versionID},
+		},
+		{
+			"INSERT INTO workspaces (id, created_at, updated_at, owner_id, organization_id, template_id, name) VALUES ($1, $3, $3, $4, $5, $6, 'task-workspace'), ($2, $3, $3, $4, $5, $6, 'other-workspace')",
+			[]any{workspaceID, otherWorkspaceID, now, userID, orgID, templateID},
+		},
+		{
+			"INSERT INTO tasks (id, organization_id, owner_id, name, workspace_id, template_version_id, prompt, created_at) VALUES ($1, $2, $3, 'task', $4, $5, 'prompt', $6)",
+			[]any{taskID, orgID, userID, workspaceID, versionID, now},
+		},
+		{
+			"INSERT INTO task_workspace_apps (task_id, workspace_build_number) VALUES ($1, 1)",
+			[]any{taskID},
+		},
+		{
+			"INSERT INTO task_snapshots (task_id, log_snapshot) VALUES ($1, '{}')",
+			[]any{taskID},
+		},
 	}
-	const otherTemplateID = "281fdf73-c6d6-4cbb-8ff5-888baf8a2fff"
-
-	_, err = sqlDB.ExecContext(ctx, `
-		INSERT INTO organizations (id, name, display_name, description, created_at, updated_at, default_org_member_roles)
-		VALUES ($1, $1::uuid::text, 'Notifications', '', $2, $2, '{}')`, orgID, now)
-	require.NoError(t, err)
-	_, err = sqlDB.ExecContext(ctx, `
-		INSERT INTO users (id, username, email, hashed_password, created_at, updated_at)
-		VALUES ($1, $1::uuid::text, $1::uuid::text || '@test.com', '', $3, $3),
-		       ($2, $2::uuid::text, $2::uuid::text || '@test.com', '', $3, $3)`, userID, bridgeUserID, now)
-	require.NoError(t, err)
-	_, err = sqlDB.ExecContext(ctx, `
-		INSERT INTO notification_preferences (user_id, notification_template_id, disabled)
-		VALUES ($1, $2, true), ($1, $3, true)`, userID, taskTemplateIDs[0], otherTemplateID)
-	require.NoError(t, err)
-	_, err = sqlDB.ExecContext(ctx, `
-		INSERT INTO user_configs (user_id, key, value)
-		VALUES ($1, 'preference_task_notification_alert_dismissed', 'true')`, userID)
-	require.NoError(t, err)
-	_, err = sqlDB.ExecContext(ctx, `
-		INSERT INTO ai_seat_state (user_id, first_used_at, last_used_at, last_event_type, last_event_description, updated_at)
-		VALUES ($1, $3, $3, 'task', 'task usage', $3),
-		       ($2, $3, $3, 'aibridge', 'bridge usage', $3)`, userID, bridgeUserID, now)
-	require.NoError(t, err)
-
-	var count int
-	const taskTemplatesQuery = "SELECT count(*) FROM notification_templates WHERE id = ANY($1::uuid[])"
-	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
-	require.Equal(t, 6, count)
+	for _, fixture := range fixtures {
+		_, err := sqlDB.ExecContext(ctx, fixture.query, fixture.args...)
+		require.NoError(t, err)
+	}
 
 	version, _, err := next()
 	require.NoError(t, err)
 	require.EqualValues(t, migrationVersion, version)
-
-	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
-	require.Zero(t, count)
-	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT count(*) FROM notification_templates WHERE id = $1", otherTemplateID).Scan(&count))
+	const objectsQuery = `SELECT
+		(SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('tasks', 'task_workspace_apps', 'task_snapshots')),
+		(SELECT count(*) FROM information_schema.views WHERE table_schema = 'public' AND table_name = 'tasks_with_status'),
+		(SELECT count(*) FROM pg_type WHERE typname = 'task_status')`
+	var tables, views, types, count int
+	require.NoError(t, sqlDB.QueryRowContext(ctx, objectsQuery).Scan(&tables, &views, &types))
+	require.Zero(t, tables)
+	require.Zero(t, views)
+	require.Zero(t, types)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT count(*) FROM information_schema.views WHERE table_schema = 'public' AND table_name = 'workspaces_expanded'").Scan(&count))
 	require.Equal(t, 1, count)
-	var preferences pq.StringArray
-	require.NoError(t, sqlDB.QueryRowContext(ctx,
-		"SELECT ARRAY(SELECT notification_template_id::text FROM notification_preferences WHERE user_id = $1)", userID).Scan(&preferences))
-	require.Equal(t, pq.StringArray{otherTemplateID}, preferences)
-	require.NoError(t, sqlDB.QueryRowContext(ctx,
-		"SELECT count(*) FROM user_configs WHERE user_id = $1 AND key = 'preference_task_notification_alert_dismissed'", userID).Scan(&count))
+	const taskIDQuery = "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'workspaces_expanded' AND column_name = 'task_id'"
+	require.NoError(t, sqlDB.QueryRowContext(ctx, taskIDQuery).Scan(&count))
 	require.Zero(t, count)
-	for id, description := range map[uuid.UUID]string{userID: "task usage", bridgeUserID: "bridge usage"} {
-		var event, gotDescription string
-		var firstUsed, lastUsed, updated time.Time
-		require.NoError(t, sqlDB.QueryRowContext(ctx, `
-			SELECT last_event_type, last_event_description, first_used_at, last_used_at, updated_at
-			FROM ai_seat_state WHERE user_id = $1`, id).Scan(&event, &gotDescription, &firstUsed, &lastUsed, &updated))
-		require.Equal(t, "aibridge", event)
-		require.Equal(t, description, gotDescription)
-		require.True(t, now.Equal(firstUsed))
-		require.True(t, now.Equal(lastUsed))
-		require.True(t, now.Equal(updated))
-	}
-	var reasons pq.StringArray
-	const reasonsQuery = "SELECT enum_range(NULL::ai_seat_usage_reason)::text[]"
-	require.NoError(t, sqlDB.QueryRowContext(ctx, reasonsQuery).Scan(&reasons))
-	require.Equal(t, pq.StringArray{"aibridge"}, reasons)
+	var workspaceIDs pq.StringArray
+	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT array_agg(id::text) FROM workspaces_expanded").Scan(&workspaceIDs))
+	require.ElementsMatch(t, []string{workspaceID.String(), otherWorkspaceID.String()}, workspaceIDs)
 
-	downSQL, err := os.ReadFile("000591_remove_task_notifications_and_usage.down.sql")
+	downSQL, err := os.ReadFile("000593_drop_task_tables.down.sql")
 	require.NoError(t, err)
 	_, err = sqlDB.ExecContext(ctx, string(downSQL))
 	require.NoError(t, err)
-	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
-	require.Equal(t, 6, count)
-	require.NoError(t, sqlDB.QueryRowContext(ctx, reasonsQuery).Scan(&reasons))
-	require.Equal(t, pq.StringArray{"aibridge", "task"}, reasons)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, objectsQuery).Scan(&tables, &views, &types))
+	require.Equal(t, 3, tables)
+	require.Equal(t, 1, views)
+	require.Equal(t, 1, types)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM tasks) + (SELECT count(*) FROM task_workspace_apps) + (SELECT count(*) FROM task_snapshots) + (SELECT count(*) FROM tasks_with_status)").Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, sqlDB.QueryRowContext(ctx, taskIDQuery).Scan(&count))
+	require.Equal(t, 1, count)
 
-	upSQL, err := os.ReadFile("000591_remove_task_notifications_and_usage.up.sql")
+	upSQL, err := os.ReadFile("000593_drop_task_tables.up.sql")
 	require.NoError(t, err)
 	_, err = sqlDB.ExecContext(ctx, string(upSQL))
 	require.NoError(t, err)
-	require.NoError(t, sqlDB.QueryRowContext(ctx, taskTemplatesQuery, taskTemplateIDs).Scan(&count))
-	require.Zero(t, count)
-	require.NoError(t, sqlDB.QueryRowContext(ctx, reasonsQuery).Scan(&reasons))
-	require.Equal(t, pq.StringArray{"aibridge"}, reasons)
 }
 
 func TestMigration000587RemoveAgentsAccessRole(t *testing.T) {
@@ -3485,155 +3746,6 @@ func TestMigration000565OAuth2ClientTypeConstraint(t *testing.T) {
 		`, uuid.New(), now, "test-565-good-"+goodValue, goodValue)
 		require.NoError(t, err, "client_type %q must remain valid", goodValue)
 	}
-}
-
-//nolint:tparallel,paralleltest // Subtests share one database with transaction-local fixtures.
-func TestMigration000590WorkspaceAgentSessionCounts(t *testing.T) {
-	t.Parallel()
-
-	const priorMigrationVersion = 589
-
-	sqlDB := testSQLDB(t)
-	next, err := migrations.Stepper(sqlDB)
-	require.NoError(t, err)
-	for {
-		version, more, err := next()
-		require.NoError(t, err)
-		if !more {
-			t.Fatalf("migration %d not found", priorMigrationVersion)
-		}
-		if version == priorMigrationVersion {
-			break
-		}
-	}
-
-	ctx := testutil.Context(t, testutil.WaitSuperLong)
-	migrationSQL, err := os.ReadFile("000590_workspace_agent_session_counts.up.sql")
-	require.NoError(t, err)
-
-	// Everything the rollup has not consumed converts, no matter how far the
-	// watermark lags. Rows the rollup already consumed convert to '{}': the
-	// insights queries read them from template_usage_stats instead. wantCounts
-	// is ordered oldest row first.
-	tests := []struct {
-		name              string
-		statsAgeHours     []int
-		sessionCount      int
-		watermarkAgeHours []int
-		wantCounts        []string
-	}{
-		{name: "empty database"},
-		{name: "no watermark and brief activity", statsAgeHours: []int{0}, sessionCount: 2, wantCounts: []string{`{"vscode": 2}`}},
-		{name: "no watermark and idle stats", statsAgeHours: []int{0}, wantCounts: []string{`{}`}},
-		{name: "no watermark and a long activity backlog", statsAgeHours: []int{48, 0}, sessionCount: 2, wantCounts: []string{`{"vscode": 2}`, `{"vscode": 2}`}},
-		// Without a watermark there is nothing in template_usage_stats to fall
-		// back on, so even ancient activity converts rather than roll up as
-		// zero minutes later.
-		{name: "no watermark and expired activity", statsAgeHours: []int{181 * 24}, sessionCount: 2, wantCounts: []string{`{"vscode": 2}`}},
-		// A weekend shutoff records nothing while coderd is down, so the
-		// watermark is days old with only the minutes before the shutoff
-		// behind it.
-		{name: "weekend shutoff", statsAgeHours: []int{63}, sessionCount: 2, watermarkAgeHours: []int{64}, wantCounts: []string{`{"vscode": 2}`}},
-		{name: "idle since the last rollup", statsAgeHours: []int{0}, watermarkAgeHours: []int{48}, wantCounts: []string{`{}`}},
-		{name: "stalled rollup", statsAgeHours: []int{47, 0}, sessionCount: 2, watermarkAgeHours: []int{48}, wantCounts: []string{`{"vscode": 2}`, `{"vscode": 2}`}},
-		{name: "activity already rolled up", statsAgeHours: []int{50}, sessionCount: 2, watermarkAgeHours: []int{25}, wantCounts: []string{`{}`}},
-		{name: "fresh watermark", statsAgeHours: []int{0}, sessionCount: 2, watermarkAgeHours: []int{23}, wantCounts: []string{`{"vscode": 2}`}},
-		{name: "latest watermark wins", statsAgeHours: []int{0}, sessionCount: 2, watermarkAgeHours: []int{25, 23}, wantCounts: []string{`{"vscode": 2}`}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tx, err := sqlDB.BeginTx(ctx, nil)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = tx.Rollback() })
-
-			for _, ageHours := range tt.statsAgeHours {
-				_, err = tx.ExecContext(ctx, `
-					INSERT INTO workspace_agent_stats (
-						id, created_at, user_id, agent_id, workspace_id, template_id,
-						connection_count, session_count_vscode
-					) VALUES (
-						gen_random_uuid(), statement_timestamp() - $1::bigint * interval '1 hour',
-						gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1, $2
-					)
-				`, ageHours, tt.sessionCount)
-				require.NoError(t, err)
-			}
-
-			for _, ageHours := range tt.watermarkAgeHours {
-				_, err = tx.ExecContext(ctx, `
-					INSERT INTO template_usage_stats (
-						start_time, end_time, template_id, user_id, median_latency_ms,
-						usage_mins, ssh_mins, sftp_mins, reconnecting_pty_mins,
-						vscode_mins, jetbrains_mins, app_usage_mins
-					) VALUES (
-						statement_timestamp() - $1::bigint * interval '1 hour',
-						statement_timestamp() - $1::bigint * interval '1 hour' + interval '30 minutes',
-						gen_random_uuid(), gen_random_uuid(), NULL, 0, 0, 0, 0, 0, 0, NULL
-					)
-				`, ageHours)
-				require.NoError(t, err)
-			}
-
-			_, err = tx.ExecContext(ctx, string(migrationSQL))
-			require.NoError(t, err)
-
-			rows, err := tx.QueryContext(ctx, `SELECT session_counts FROM workspace_agent_stats ORDER BY created_at`)
-			require.NoError(t, err)
-			defer rows.Close()
-			var gotCounts []string
-			for rows.Next() {
-				var sessionCounts []byte
-				require.NoError(t, rows.Scan(&sessionCounts))
-				gotCounts = append(gotCounts, string(sessionCounts))
-			}
-			require.NoError(t, rows.Err())
-			require.Len(t, gotCounts, len(tt.wantCounts))
-			for i, want := range tt.wantCounts {
-				require.JSONEq(t, want, gotCounts[i])
-			}
-		})
-	}
-
-	// The down migration has columns for the four known apps only, so a count
-	// under any other name is lost.
-	t.Run("down restores known apps only", func(t *testing.T) {
-		tx, err := sqlDB.BeginTx(ctx, nil)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = tx.Rollback() })
-
-		_, err = tx.ExecContext(ctx, string(migrationSQL))
-		require.NoError(t, err)
-
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO workspace_agent_stats (
-				id, created_at, user_id, agent_id, workspace_id, template_id,
-				connection_count, session_counts
-			) VALUES (
-				gen_random_uuid(), statement_timestamp(), gen_random_uuid(),
-				gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1,
-				'{"vscode": 2, "some_future_ide": 3}'::jsonb
-			)
-		`)
-		require.NoError(t, err)
-
-		downSQL, err := os.ReadFile("000590_workspace_agent_session_counts.down.sql")
-		require.NoError(t, err)
-		_, err = tx.ExecContext(ctx, string(downSQL))
-		require.NoError(t, err)
-
-		var vscode, jetbrains, reconnectingPTY, ssh int64
-		err = tx.QueryRowContext(ctx, `
-			SELECT session_count_vscode, session_count_jetbrains,
-				session_count_reconnecting_pty, session_count_ssh
-			FROM workspace_agent_stats
-		`).Scan(&vscode, &jetbrains, &reconnectingPTY, &ssh)
-		require.NoError(t, err)
-		require.EqualValues(t, 2, vscode)
-		require.EqualValues(t, 0, jetbrains)
-		require.EqualValues(t, 0, reconnectingPTY)
-		require.EqualValues(t, 0, ssh)
-	})
 }
 
 // TestMigration000566OAuth2AuthMethodBackfill covers the repair the backfill
