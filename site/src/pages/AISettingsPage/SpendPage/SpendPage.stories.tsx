@@ -204,6 +204,33 @@ export const PeriodAppliesToUsersAndBreakdowns: Story = {
 	},
 };
 
+export const FastTypedSearchIsKeptAndTrimmed: Story = {
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const search = await canvas.findByRole<HTMLInputElement>("textbox", {
+			name: "Search spend by name or username",
+		});
+		await userEvent.click(search);
+		// Raw input events, unlike userEvent.type, do not compensate for React
+		// resetting a controlled input between keystrokes, so this mimics a fast
+		// typist whose keystrokes land before the URL-driven re-render.
+		const setNativeValue = Object.getOwnPropertyDescriptor(
+			HTMLInputElement.prototype,
+			"value",
+		)?.set;
+		for (const char of " user01 ") {
+			setNativeValue?.call(search, search.value + char);
+			search.dispatchEvent(new Event("input", { bubbles: true }));
+		}
+		await expect(search).toHaveValue(" user01 ");
+		await waitFor(() =>
+			expect(API.getAIGatewaySpendUsers).toHaveBeenCalledWith(
+				expect.objectContaining({ search: "user01" }),
+			),
+		);
+	},
+};
+
 export const ProviderFilterAppliesToUsersBreakdownsAndDrillIn: Story = {
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);

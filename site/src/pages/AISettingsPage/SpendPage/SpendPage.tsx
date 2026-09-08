@@ -193,7 +193,9 @@ const SpendPage: FC<SpendPageProps> = ({ now }) => {
 				dimensions={dimensions}
 				filterMenus={filterMenus}
 				searchFilter={searchFilter}
-				onSearchFilterChange={(value) => setFilterParams({ search: value })}
+				onSearchFilterChange={(value) =>
+					setFilterParams({ search: value.trim() })
+				}
 				usersQuery={usersQuery}
 				drillInUserId={selectedUserId}
 				drillInUser={selectedUserQuery.data ?? null}

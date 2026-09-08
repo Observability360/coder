@@ -1,4 +1,4 @@
-import type { FC } from "react";
+import { type FC, useState } from "react";
 import type { AIGatewaySpendFilter } from "#/api/typesGenerated";
 import {
 	DateRangePicker,
@@ -51,26 +51,52 @@ export const SpendFilters: FC<SpendFiltersProps> = ({
 	onDateRangeChange,
 	search,
 }) => {
+	// The settings sidebar leaves this row less room than the full-width
+	// sessions filter, so it measures its own width instead of the viewport and
+	// keeps wrapping until the search field would stay usable on one line.
 	return (
-		<div className="flex flex-wrap gap-2 lg:flex-nowrap">
-			{search && (
-				<SearchField
-					className="w-full"
-					value={search.value}
-					onChange={search.onChange}
-					placeholder="Search by name or username"
-					aria-label="Search spend by name or username"
+		<div className="@container">
+			<div className="flex flex-wrap gap-2 @5xl:flex-nowrap">
+				{search && <SpendSearchField {...search} />}
+				<ProviderFilter menu={menus.provider} width={FILTER_WIDTH} />
+				<ClientFilter menu={menus.client} width={FILTER_WIDTH} />
+				<ModelFilter menu={menus.model} width={FILTER_WIDTH} />
+				<DateRangePicker
+					now={now}
+					value={dateRange}
+					onChange={onDateRangeChange}
+					size="lg"
 				/>
-			)}
-			<ProviderFilter menu={menus.provider} width={FILTER_WIDTH} />
-			<ClientFilter menu={menus.client} width={FILTER_WIDTH} />
-			<ModelFilter menu={menus.model} width={FILTER_WIDTH} />
-			<DateRangePicker
-				now={now}
-				value={dateRange}
-				onChange={onDateRangeChange}
-				size="lg"
-			/>
+			</div>
 		</div>
+	);
+};
+
+// The URL owns the search, but an input controlled by the URL waits for the
+// router re-render between keystrokes and drops characters from fast typists,
+// so the field shows its own draft while it has focus.
+const SpendSearchField: FC<{
+	value: string;
+	onChange: (value: string) => void;
+}> = ({ value, onChange }) => {
+	const [draft, setDraft] = useState(value);
+	const [isEditing, setIsEditing] = useState(false);
+
+	return (
+		<SearchField
+			className="w-full"
+			value={isEditing ? draft : value}
+			onFocus={() => {
+				setDraft(value);
+				setIsEditing(true);
+			}}
+			onBlur={() => setIsEditing(false)}
+			onChange={(next) => {
+				setDraft(next);
+				onChange(next);
+			}}
+			placeholder="Search by name or username"
+			aria-label="Search spend by name or username"
+		/>
 	);
 };
