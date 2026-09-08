@@ -27,15 +27,35 @@ COMMENT ON COLUMN template_usage_stats.jetbrains_mins IS 'Total minutes the user
 -- Restore the five families the fixed columns have room for. Usage attributed
 -- to any other family is discarded, and so is all per-app session usage: the
 -- fixed columns have nowhere to put either.
-UPDATE template_usage_stats
+UPDATE template_usage_stats AS tus
 SET
-	ssh_mins = COALESCE((session_family_usage_mins ->> 'ssh')::smallint, 0),
-	sftp_mins = COALESCE((session_family_usage_mins ->> 'sftp')::smallint, 0),
-	reconnecting_pty_mins = COALESCE((session_family_usage_mins ->> 'reconnecting_pty')::smallint, 0),
-	vscode_mins = COALESCE((session_family_usage_mins ->> 'vscode')::smallint, 0),
-	jetbrains_mins = COALESCE((session_family_usage_mins ->> 'jetbrains')::smallint, 0)
-WHERE session_family_usage_mins <> '{}'::jsonb;
+	ssh_mins = families.ssh_mins,
+	sftp_mins = families.sftp_mins,
+	reconnecting_pty_mins = families.reconnecting_pty_mins,
+	vscode_mins = families.vscode_mins,
+	jetbrains_mins = families.jetbrains_mins
+FROM (
+	SELECT
+		start_time,
+		template_id,
+		user_id,
+		COALESCE(MAX(usage_mins) FILTER (WHERE family = 'ssh'), 0)::smallint AS ssh_mins,
+		COALESCE(MAX(usage_mins) FILTER (WHERE family = 'sftp'), 0)::smallint AS sftp_mins,
+		COALESCE(MAX(usage_mins) FILTER (WHERE family = 'reconnecting_pty'), 0)::smallint AS reconnecting_pty_mins,
+		COALESCE(MAX(usage_mins) FILTER (WHERE family = 'vscode'), 0)::smallint AS vscode_mins,
+		COALESCE(MAX(usage_mins) FILTER (WHERE family = 'jetbrains'), 0)::smallint AS jetbrains_mins
+	FROM
+		template_usage_stats_session_families
+	WHERE
+		family IN ('ssh', 'sftp', 'reconnecting_pty', 'vscode', 'jetbrains')
+	GROUP BY
+		start_time, template_id, user_id
+) AS families
+WHERE
+	tus.start_time = families.start_time
+	AND tus.template_id = families.template_id
+	AND tus.user_id = families.user_id;
 
-ALTER TABLE template_usage_stats
-	DROP COLUMN session_app_usage_mins,
-	DROP COLUMN session_family_usage_mins;
+DROP TABLE template_usage_stats_session_apps;
+
+DROP TABLE template_usage_stats_session_families;

@@ -23,11 +23,21 @@ func TestSessionUsageHistoryCapsAndNamespaces(t *testing.T) {
 	ctx := context.Background()
 	start := dbtime.Now().Add(-2 * time.Hour).Truncate(30 * time.Minute)
 	user, template1, template2, appTemplate := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	// The same user in two templates in one half hour, so the family minutes
+	// have to be capped at 30 across templates. There is no sqlc query for the
+	// child tables, so the history is seeded directly.
 	for _, template := range []uuid.UUID{template1, template2} {
-		_, err := sqlDB.ExecContext(ctx, `INSERT INTO template_usage_stats(start_time,end_time,user_id,template_id,usage_mins,session_family_usage_mins,session_app_usage_mins) VALUES($1,$2,$3,$4,20,'{"new_family":20,"ssh":20,"sftp":2}',NULL)`, start, start.Add(30*time.Minute), user, template)
+		_, err := sqlDB.ExecContext(ctx, `INSERT INTO template_usage_stats(start_time,end_time,user_id,template_id,usage_mins) VALUES($1,$2,$3,$4,20)`,
+			start, start.Add(30*time.Minute), user, template)
+		require.NoError(t, err)
+		_, err = sqlDB.ExecContext(ctx, `INSERT INTO template_usage_stats_session_families(start_time,template_id,user_id,family,usage_mins) VALUES($1,$2,$3,'new_family',20),($1,$2,$3,'ssh',20),($1,$2,$3,'sftp',2)`,
+			start, template, user)
 		require.NoError(t, err)
 	}
-	_, err := sqlDB.ExecContext(ctx, `INSERT INTO template_usage_stats(start_time,end_time,user_id,template_id,usage_mins,session_family_usage_mins,session_app_usage_mins,app_usage_mins) VALUES($1,$2,$3,$4,5,'{}','{}','{"ssh":5}')`, start, start.Add(30*time.Minute), uuid.New(), appTemplate)
+	// A bucket produced by app stats alone: it has no session usage, so it has
+	// no child rows.
+	_, err := sqlDB.ExecContext(ctx, `INSERT INTO template_usage_stats(start_time,end_time,user_id,template_id,usage_mins,app_usage_mins) VALUES($1,$2,$3,$4,5,'{"ssh":5}')`,
+		start, start.Add(30*time.Minute), uuid.New(), appTemplate)
 	require.NoError(t, err)
 	usage, err := db.GetTemplateInsights(ctx, database.GetTemplateInsightsParams{StartTime: start, EndTime: start.Add(30 * time.Minute)})
 	require.NoError(t, err)
@@ -45,6 +55,11 @@ func TestSessionUsageHistoryCapsAndNamespaces(t *testing.T) {
 	require.EqualValues(t, 300, onlyApp.UsageTotalSeconds)
 	require.JSONEq(t, `{}`, string(onlyApp.SessionFamilyUsageSeconds))
 	require.JSONEq(t, `{}`, string(onlyApp.SessionFamilyTemplateIds))
+	// Filtering to one of the two templates leaves a single-template user, so
+	// the capped path is not taken and the minutes are that template's alone.
+	onlyOne, err := db.GetTemplateInsights(ctx, database.GetTemplateInsightsParams{StartTime: start, EndTime: start.Add(30 * time.Minute), TemplateIDs: []uuid.UUID{template1}})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"new_family":1200,"ssh":1200,"sftp":120}`, string(onlyOne.SessionFamilyUsageSeconds))
 }
 
 func TestSessionUsageEmptyHistory(t *testing.T) {

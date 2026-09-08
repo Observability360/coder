@@ -19869,22 +19869,22 @@ func TestUpsertTemplateUsageStatsAttributesSessionCountsByFamily(t *testing.T) {
 	cursor, ok := byTemplate[cursorTemplate]
 	require.True(t, ok, "a VS Code fork must be rolled up")
 	require.Equal(t, int16(1), cursor.UsageMins)
-	require.Equal(t, database.StringMapOfInt{"vscode": 1}, cursor.SessionFamilyUsageMins)
-	require.Equal(t, database.StringMapOfInt{"cursor": 1}, cursor.SessionAppUsageMins)
+	require.Equal(t, map[string]int64{"vscode": 1}, sessionUsageMins(ctx, t, sqlDB, "template_usage_stats_session_families", "family", cursor.StartTime, cursor.UserID, cursorTemplate))
+	require.Equal(t, map[string]int64{"cursor": 1}, sessionUsageMins(ctx, t, sqlDB, "template_usage_stats_session_apps", "app_name", cursor.StartTime, cursor.UserID, cursorTemplate))
 
 	zed, ok := byTemplate[zedTemplate]
 	require.True(t, ok, "an SSH-speaking editor must be rolled up")
 	require.Equal(t, int16(1), zed.UsageMins)
-	require.Equal(t, database.StringMapOfInt{"ssh": 1}, zed.SessionFamilyUsageMins)
-	require.Equal(t, database.StringMapOfInt{"zed": 1}, zed.SessionAppUsageMins)
+	require.Equal(t, map[string]int64{"ssh": 1}, sessionUsageMins(ctx, t, sqlDB, "template_usage_stats_session_families", "family", zed.StartTime, zed.UserID, zedTemplate))
+	require.Equal(t, map[string]int64{"zed": 1}, sessionUsageMins(ctx, t, sqlDB, "template_usage_stats_session_apps", "app_name", zed.StartTime, zed.UserID, zedTemplate))
 
 	// An app with no family is still activity, so it produces usage minutes
 	// attributed to the unknown family.
 	unknown, ok := byTemplate[unknownTemplate]
 	require.True(t, ok, "a session with no family must still appear as usage")
 	require.Equal(t, int16(1), unknown.UsageMins)
-	require.Equal(t, database.StringMapOfInt{"unknown": 1}, unknown.SessionFamilyUsageMins)
-	require.Equal(t, database.StringMapOfInt{"some_new_ide": 1}, unknown.SessionAppUsageMins)
+	require.Equal(t, map[string]int64{"unknown": 1}, sessionUsageMins(ctx, t, sqlDB, "template_usage_stats_session_families", "family", unknown.StartTime, unknown.UserID, unknownTemplate))
+	require.Equal(t, map[string]int64{"some_new_ide": 1}, sessionUsageMins(ctx, t, sqlDB, "template_usage_stats_session_apps", "app_name", unknown.StartTime, unknown.UserID, unknownTemplate))
 }
 
 func sessionFamilyCounts(t *testing.T, data json.RawMessage) map[codersdk.AppFamilyName]int64 {

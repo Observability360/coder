@@ -1,35 +1,69 @@
-ALTER TABLE template_usage_stats
-	ADD COLUMN session_app_usage_mins jsonb,
-	ADD COLUMN session_family_usage_mins jsonb DEFAULT '{}'::jsonb NOT NULL;
+-- The primary keys put user_id before template_id: the insights read caps a
+-- user's minutes per half hour across templates, and looks up one user's rows
+-- in a half hour through this prefix. The upsert's conflict target names the
+-- same columns in the parent's order, which the unique index satisfies.
+CREATE TABLE template_usage_stats_session_families (
+	start_time timestamptz NOT NULL,
+	template_id uuid NOT NULL,
+	user_id uuid NOT NULL,
+	family text NOT NULL,
+	usage_mins smallint NOT NULL,
 
-COMMENT ON COLUMN template_usage_stats.session_app_usage_mins IS 'Total minutes the user has been using each app, keyed by the app name the agent reported. Agents that report only the fixed session counts, and history converted by migration 000590, report family names in this position, so a key can be a family aggregate rather than a distinct app. Null means the row was rolled up before the column existed.';
+	PRIMARY KEY (start_time, user_id, template_id, family),
+	FOREIGN KEY (start_time, template_id, user_id)
+		REFERENCES template_usage_stats (start_time, template_id, user_id)
+		ON DELETE CASCADE
+);
 
-COMMENT ON COLUMN template_usage_stats.session_family_usage_mins IS 'Total minutes the user has been using each app family, keyed by family name. Empty means no session usage was recorded.';
+COMMENT ON TABLE template_usage_stats_session_families IS 'Session usage of each template_usage_stats bucket, split by app family. A bucket with no row here recorded no session usage.';
 
--- Carry every family the fixed columns recorded into the map, sftp included:
--- the rollup has never written it, but a row that has a value must not lose
--- it. Zero minutes are dropped so a row lists only the families it saw, which
--- is what the rollup writes from now on. Per-app usage stays null for these
--- rows because the fixed columns only ever recorded the family.
---
--- Null is not a clean boundary in time: the rollup re-upserts its rewind
--- window, so a bucket near this migration can be rewritten with a per-app map
--- computed from converted rows, whose keys are family names. The column alone
--- cannot separate those keys from genuine app names.
-UPDATE template_usage_stats
-SET session_family_usage_mins = jsonb_strip_nulls(jsonb_build_object(
-	'ssh', CASE WHEN ssh_mins > 0 THEN ssh_mins END,
-	'sftp', CASE WHEN sftp_mins > 0 THEN sftp_mins END,
-	'reconnecting_pty', CASE WHEN reconnecting_pty_mins > 0 THEN reconnecting_pty_mins END,
-	'vscode', CASE WHEN vscode_mins > 0 THEN vscode_mins END,
-	'jetbrains', CASE WHEN jetbrains_mins > 0 THEN jetbrains_mins END
-))
+COMMENT ON COLUMN template_usage_stats_session_families.family IS 'Family name the registry attributed the session to when the bucket was last rolled up, including ''unknown'' for an app name the registry did not know. Buckets the rollup no longer revisits keep their recorded attribution.';
+
+COMMENT ON COLUMN template_usage_stats_session_families.usage_mins IS 'Total minutes the user has been using the family. Minutes shared by two apps of the family count once.';
+
+CREATE TABLE template_usage_stats_session_apps (
+	start_time timestamptz NOT NULL,
+	template_id uuid NOT NULL,
+	user_id uuid NOT NULL,
+	app_name text NOT NULL,
+	usage_mins smallint NOT NULL,
+
+	PRIMARY KEY (start_time, user_id, template_id, app_name),
+	FOREIGN KEY (start_time, template_id, user_id)
+		REFERENCES template_usage_stats (start_time, template_id, user_id)
+		ON DELETE CASCADE
+);
+
+COMMENT ON TABLE template_usage_stats_session_apps IS 'Session usage of each template_usage_stats bucket, split by app name. A bucket with family rows but no rows here predates per-app recording, so its per-app usage is unknown rather than zero.';
+
+COMMENT ON COLUMN template_usage_stats_session_apps.app_name IS 'App name as the agent reported it, so it is a source label rather than a curated identity. An agent that reports only the fixed session counts reports family names here, as does history converted by migration 000590.';
+
+COMMENT ON COLUMN template_usage_stats_session_apps.usage_mins IS 'Total minutes the user has been using the app.';
+
+-- Carry every family the fixed columns recorded, sftp included: the rollup has
+-- never written it, but a row that has a value must not lose it. Zero minutes
+-- are skipped so a bucket has rows only for the families it saw, which is what
+-- the rollup writes from now on. No app rows are written: the fixed columns
+-- only ever recorded the family, so per-app usage stays unknown for these
+-- buckets rather than being invented from family totals.
+INSERT INTO template_usage_stats_session_families (start_time, template_id, user_id, family, usage_mins)
+SELECT
+	tus.start_time,
+	tus.template_id,
+	tus.user_id,
+	families.family,
+	families.usage_mins
+FROM
+	template_usage_stats AS tus,
+	LATERAL (VALUES
+		('ssh', tus.ssh_mins),
+		('sftp', tus.sftp_mins),
+		('reconnecting_pty', tus.reconnecting_pty_mins),
+		('vscode', tus.vscode_mins),
+		('jetbrains', tus.jetbrains_mins)
+	) AS families(family, usage_mins)
 WHERE
-	ssh_mins > 0
-	OR sftp_mins > 0
-	OR reconnecting_pty_mins > 0
-	OR vscode_mins > 0
-	OR jetbrains_mins > 0;
+	families.usage_mins > 0;
 
 ALTER TABLE template_usage_stats
 	DROP COLUMN ssh_mins,

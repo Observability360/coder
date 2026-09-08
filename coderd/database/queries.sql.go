@@ -16637,70 +16637,127 @@ func (q *sqlQuerier) GetTemplateAppInsightsByTemplate(ctx context.Context, arg G
 
 const getTemplateInsights = `-- name: GetTemplateInsights :one
 WITH
-	stats AS (
+	base AS MATERIALIZED (
+		-- One pass over the main table answers three questions: how many
+		-- templates each user touched in a half hour, that user's capped
+		-- minutes, and the list of templates in the window. GROUPING marks
+		-- which of the two sets a row belongs to.
 		SELECT
+			GROUPING(template_id) AS is_user_row,
 			start_time,
-			template_id,
 			user_id,
-			usage_mins,
-			session_family_usage_mins
+			template_id,
+			COUNT(*) AS templates,
+			LEAST(SUM(usage_mins), 30) AS usage_mins
 		FROM
 			template_usage_stats
 		WHERE
 			start_time >= $1::timestamptz
 			AND end_time <= $2::timestamptz
 			AND CASE WHEN COALESCE(array_length($3::uuid[], 1), 0) > 0 THEN template_id = ANY($3::uuid[]) ELSE TRUE END
+		GROUP BY GROUPING SETS ((start_time, user_id), (template_id))
 	),
-	insights AS (
+	users AS (
 		SELECT
+			start_time,
 			user_id,
-			-- See motivation in GetTemplateInsights for LEAST(SUM(n), 30).
-			LEAST(SUM(usage_mins), 30) AS usage_mins
+			templates,
+			usage_mins
 		FROM
-			stats
-		GROUP BY
-			start_time, user_id
+			base
+		WHERE
+			is_user_row = 1
 	),
-	family_insights AS (
-		-- Same interval and cap as insights, one row per family instead of
-		-- one column per family, so the set of families lives in the data.
+	multi AS MATERIALIZED (
+		-- Only a user who used more than one template in the same half hour
+		-- can exceed the 30 minute cap, and there are usually none.
 		SELECT
-			family.name AS family,
-			LEAST(SUM(family.mins::bigint), 30) AS usage_mins
+			start_time,
+			user_id
 		FROM
-			stats, jsonb_each_text(stats.session_family_usage_mins) AS family(name, mins)
+			users
+		WHERE
+			templates > 1
+	),
+	single_family_usage AS (
+		-- Everything but the multi-template buckets, which cannot exceed the
+		-- cap, so they need no per-user grouping. This also collects the
+		-- template list per family, for which the cap is irrelevant.
+		SELECT
+			sessions.family,
+			sessions.template_id,
+			SUM(LEAST(sessions.usage_mins, 30)) FILTER (
+				WHERE (sessions.start_time, sessions.user_id) NOT IN (SELECT start_time, user_id FROM multi)
+			) AS usage_mins
+		FROM
+			template_usage_stats_session_families AS sessions
+		WHERE
+			sessions.start_time >= $1::timestamptz
+			AND sessions.start_time + '30 minutes'::interval <= $2::timestamptz
+			AND CASE WHEN COALESCE(array_length($3::uuid[], 1), 0) > 0 THEN sessions.template_id = ANY($3::uuid[]) ELSE TRUE END
+			AND sessions.usage_mins > 0
 		GROUP BY
-			stats.start_time, stats.user_id, family.name
+			sessions.family, sessions.template_id
+	),
+	multi_family_usage AS (
+		-- See motivation in GetTemplateInsights for LEAST(SUM(n), 30).
+		SELECT
+			sessions.family,
+			LEAST(SUM(sessions.usage_mins), 30) AS usage_mins
+		FROM
+			template_usage_stats_session_families AS sessions
+		WHERE
+			sessions.start_time >= $1::timestamptz
+			AND sessions.start_time + '30 minutes'::interval <= $2::timestamptz
+			AND CASE WHEN COALESCE(array_length($3::uuid[], 1), 0) > 0 THEN sessions.template_id = ANY($3::uuid[]) ELSE TRUE END
+			AND sessions.usage_mins > 0
+			AND EXISTS (
+				SELECT 1
+				FROM multi
+				WHERE multi.start_time = sessions.start_time
+					AND multi.user_id = sessions.user_id
+			)
+		GROUP BY
+			sessions.start_time, sessions.user_id, sessions.family
 	),
 	family_usage AS (
 		SELECT
 			family,
 			(SUM(usage_mins) * 60)::bigint AS usage_seconds
-		FROM
-			family_insights
+		FROM (
+			SELECT
+				family,
+				COALESCE(SUM(usage_mins), 0) AS usage_mins
+			FROM
+				single_family_usage
+			GROUP BY
+				family
+
+			UNION ALL
+
+			SELECT
+				family,
+				SUM(usage_mins) AS usage_mins
+			FROM
+				multi_family_usage
+			GROUP BY
+				family
+		) AS parts
 		GROUP BY
 			family
 	),
 	family_templates AS (
 		SELECT
-			family.name AS family,
-			array_agg(DISTINCT stats.template_id) AS template_ids
-		FROM
-			stats, jsonb_each_text(stats.session_family_usage_mins) AS family(name, mins)
-		WHERE
-			family.mins::bigint > 0
-		GROUP BY
-			family.name
-	),
-	templates AS (
-		SELECT
+			family,
 			array_agg(DISTINCT template_id) AS template_ids
 		FROM
-			stats
+			single_family_usage
+		GROUP BY
+			family
 	)
 
 SELECT
-	COALESCE((SELECT template_ids FROM templates), '{}')::uuid[] AS template_ids, -- Includes app usage.
+	COALESCE((SELECT array_agg(DISTINCT template_id) FROM base WHERE is_user_row = 0), '{}')::uuid[] AS template_ids, -- Includes app usage.
 	COALESCE(COUNT(DISTINCT user_id), 0)::bigint AS active_users, -- Includes app usage.
 	COALESCE(SUM(usage_mins) * 60, 0)::bigint AS usage_total_seconds, -- Includes app usage.
 	-- Family name to usage seconds, and family name to the templates that saw
@@ -16708,7 +16765,7 @@ SELECT
 	COALESCE((SELECT jsonb_object_agg(family, usage_seconds) FROM family_usage), '{}'::jsonb)::jsonb AS session_family_usage_seconds,
 	COALESCE((SELECT jsonb_object_agg(family, template_ids) FROM family_templates), '{}'::jsonb)::jsonb AS session_family_template_ids
 FROM
-	insights
+	users
 `
 
 type GetTemplateInsightsParams struct {
@@ -16729,9 +16786,9 @@ type GetTemplateInsightsRow struct {
 // workspaces in a given timeframe. The template IDs, active users, and
 // usage_seconds all reflect any usage in the template, including apps.
 //
-// Session usage is returned per app family exactly as the rollup recorded it,
-// so a family the rollup learns about later is reported without a change
-// here.
+// Session usage comes from the family child table exactly as the rollup
+// recorded it, so a family the rollup learns about later is reported without a
+// change here.
 //
 // When combining data from multiple templates, we must make a guess at
 // how the user behaved for the 30 minute interval. In this case we make
@@ -16840,27 +16897,34 @@ func (q *sqlQuerier) GetTemplateInsightsByInterval(ctx context.Context, arg GetT
 
 const getTemplateInsightsByTemplate = `-- name: GetTemplateInsightsByTemplate :many
 WITH
-	-- Deduplicate activity by template, user, and minute. Each row's session
-	-- counts are decomposed into the families their app names map to, and the
-	-- families are deduplicated within the minute so a minute with two apps
-	-- of one family counts once for that family. app_families maps app name to
-	-- family name; an app the registry does not know is attributed to
-	-- 'unknown' rather than dropped.
-	minute_activity AS (
+	expanded AS (
+		-- Each row's app names are expanded once and mapped to their family.
+		-- app_families maps app name to family name; an app the registry does
+		-- not know is attributed to 'unknown' rather than dropped.
 		SELECT
 			was.template_id,
 			was.user_id,
 			date_trunc('minute', was.created_at) AS minute,
-			array_agg(DISTINCT COALESCE($1::jsonb ->> app_name, 'unknown')) AS families,
-			BOOL_OR(was.connection_count > 0) AS has_connection
+			COALESCE($1::jsonb ->> app_name, 'unknown') AS family
 		FROM
 			workspace_agent_stats AS was, jsonb_object_keys(was.session_counts) AS app_name
 		WHERE
 			was.created_at >= $2::timestamptz
 			AND was.created_at < $3::timestamptz
 			AND was.session_counts <> '{}'::jsonb
+	),
+	minute_family AS (
+		-- Deduplicate activity by template, user, minute, and family, so a
+		-- minute with two apps of one family counts once for that family.
+		SELECT
+			template_id,
+			user_id,
+			minute,
+			family
+		FROM
+			expanded
 		GROUP BY
-			was.template_id, was.user_id, minute
+			template_id, user_id, minute, family
 	),
 	connected AS (
 		-- NOTE(mafredri): The agent stats are currently very unreliable, and
@@ -16869,30 +16933,33 @@ WITH
 		-- within this bucket". A better solution here would be preferable.
 		SELECT
 			template_id,
-			user_id,
-			BOOL_OR(has_connection) AS has_connection
+			user_id
 		FROM
-			minute_activity
+			workspace_agent_stats
+		WHERE
+			created_at >= $2::timestamptz
+			AND created_at < $3::timestamptz
+			AND session_counts <> '{}'::jsonb
 		GROUP BY
 			template_id, user_id
+		HAVING
+			BOOL_OR(connection_count > 0)
 	),
 	insights AS (
 		SELECT
-			ma.template_id,
-			ma.user_id,
-			family,
+			mf.template_id,
+			mf.user_id,
+			mf.family,
 			COUNT(*) AS usage_mins
 		FROM
-			minute_activity AS ma
+			minute_family AS mf
 		JOIN
 			connected AS c
 		ON
-			c.template_id = ma.template_id
-			AND c.user_id = ma.user_id
-			AND c.has_connection,
-			unnest(ma.families) AS family
+			c.template_id = mf.template_id
+			AND c.user_id = mf.user_id
 		GROUP BY
-			ma.template_id, ma.user_id, family
+			mf.template_id, mf.user_id, mf.family
 	),
 	family_usage AS (
 		SELECT
@@ -17078,7 +17145,7 @@ func (q *sqlQuerier) GetTemplateParameterInsights(ctx context.Context, arg GetTe
 
 const getTemplateUsageStats = `-- name: GetTemplateUsageStats :many
 SELECT
-	start_time, end_time, template_id, user_id, median_latency_ms, usage_mins, app_usage_mins, session_app_usage_mins, session_family_usage_mins
+	start_time, end_time, template_id, user_id, median_latency_ms, usage_mins, app_usage_mins
 FROM
 	template_usage_stats
 WHERE
@@ -17110,8 +17177,6 @@ func (q *sqlQuerier) GetTemplateUsageStats(ctx context.Context, arg GetTemplateU
 			&i.MedianLatencyMs,
 			&i.UsageMins,
 			&i.AppUsageMins,
-			&i.SessionAppUsageMins,
-			&i.SessionFamilyUsageMins,
 		); err != nil {
 			return nil, err
 		}
@@ -17503,20 +17568,19 @@ WITH
 		GROUP BY
 			time_bucket, w.template_id, fas.user_id, fas.access_method, fas.slug_or_port
 	),
-	agent_stats_buckets AS (
+	agent_stats_rows AS (
+		-- One filtered pass over workspace_agent_stats feeds both the bucket
+		-- grouping and the per-app mask grouping below, instead of scanning the
+		-- table once for each. The minute bit is computed here so the mask
+		-- grouping never touches created_at again.
 		SELECT
-			-- Truncate the minute to the nearest half hour, this is the bucket size
-			-- for the data.
 			date_trunc('hour', created_at) + trunc(date_part('minute', created_at) / 30) * 30 * '1 minute'::interval AS time_bucket,
 			template_id,
 			user_id,
-			-- Store each unique minute bucket for later merge between datasets.
-			array_agg(DISTINCT date_trunc('minute', created_at)) AS minute_buckets,
-			-- NOTE(mafredri): The agent stats are currently very unreliable, and
-			-- sometimes the connections are missing, even during active sessions.
-			-- Since we can't fully rely on this, we check for "any connection
-			-- during this half-hour". A better solution here would be preferable.
-			MAX(connection_count) > 0 AS has_connection
+			date_trunc('minute', created_at) AS minute_bucket,
+			(1 << (date_part('minute', created_at)::int % 30)) AS minute_bit,
+			connection_count,
+			session_counts
 		FROM
 			workspace_agent_stats
 		WHERE
@@ -17525,6 +17589,21 @@ WITH
 			created_at >= (SELECT t FROM latest_start)
 			AND created_at < NOW()
 			AND session_counts <> '{}'::jsonb
+	),
+	agent_stats_buckets AS (
+		SELECT
+			time_bucket,
+			template_id,
+			user_id,
+			-- Store each unique minute bucket for later merge between datasets.
+			array_agg(DISTINCT minute_bucket) AS minute_buckets,
+			-- NOTE(mafredri): The agent stats are currently very unreliable, and
+			-- sometimes the connections are missing, even during active sessions.
+			-- Since we can't fully rely on this, we check for "any connection
+			-- during this half-hour". A better solution here would be preferable.
+			MAX(connection_count) > 0 AS has_connection
+		FROM
+			agent_stats_rows
 		GROUP BY
 			time_bucket, template_id, user_id
 	),
@@ -17541,23 +17620,14 @@ WITH
 		-- a count: masks can be OR'd into a family below without counting a
 		-- minute twice when two apps of the same family were active in it.
 		-- Transient, only the minute counts derived from them are stored.
-		--
-		-- The keys are app names as reported. An agent that reports only the
-		-- fixed session counts reports family names here, so the per-app map
-		-- can hold a family aggregate under a family name. The family map is
-		-- unaffected: those names belong to the family they aggregate.
 		SELECT
-			date_trunc('hour', created_at) + trunc(date_part('minute', created_at) / 30) * 30 * '1 minute'::interval AS time_bucket,
+			time_bucket,
 			template_id,
 			user_id,
 			app_name,
-			bit_or(1 << (date_part('minute', created_at)::int % 30)) AS minute_mask
+			bit_or(minute_bit) AS minute_mask
 		FROM
-			workspace_agent_stats, jsonb_object_keys(session_counts) AS app_name
-		WHERE
-			created_at >= (SELECT t FROM latest_start)
-			AND created_at < NOW()
-			AND session_counts <> '{}'::jsonb
+			agent_stats_rows, jsonb_object_keys(session_counts) AS app_name
 		GROUP BY
 			time_bucket, template_id, user_id, app_name
 	),
@@ -17587,16 +17657,17 @@ WITH
 			(time_bucket, template_id, user_id, COALESCE(app_family_registry.family, 'unknown'))
 		)
 	),
-	agent_stats_session_usage AS (
-		-- Both maps count the minutes set in a mask. Postgres 13 has no
-		-- bit_count, so the set bits are counted by stripping the zeros out of
-		-- the mask's text form.
+	agent_stats_session_minutes AS (
+		-- The minutes each name was active, counted from the bits set in its
+		-- mask. Postgres 13 has no bit_count, so the set bits are counted by
+		-- stripping the zeros out of the mask's text form.
 		SELECT
 			masks.time_bucket,
 			masks.template_id,
 			masks.user_id,
-			jsonb_object_agg(masks.app_name, length(replace(masks.minute_mask::bit(30)::text, '0', ''))) FILTER (WHERE masks.family_group = 0) AS session_app_usage_mins,
-			jsonb_object_agg(masks.family, length(replace(masks.minute_mask::bit(30)::text, '0', ''))) FILTER (WHERE masks.family_group = 1) AS session_family_usage_mins
+			masks.family_group,
+			CASE WHEN masks.family_group = 0 THEN masks.app_name ELSE masks.family END AS name,
+			length(replace(masks.minute_mask::bit(30)::text, '0', ''))::smallint AS usage_mins
 		FROM
 			agent_stats_session_masks AS masks
 		JOIN
@@ -17608,8 +17679,6 @@ WITH
 			-- The same gate the union below applies to agent stats, so a
 			-- bucket that only has app stats records no session usage.
 			AND buckets.has_connection
-		GROUP BY
-			masks.time_bucket, masks.template_id, masks.user_id
 	),
 	stats AS (
 		SELECT
@@ -17685,65 +17754,156 @@ WITH
 			AND was.connection_median_latency_ms > 0
 		GROUP BY
 			mb.start_time, mb.template_id, mb.user_id
+	),
+	upsert_stats AS (
+		INSERT INTO template_usage_stats AS tus (
+			start_time,
+			end_time,
+			template_id,
+			user_id,
+			usage_mins,
+			median_latency_ms,
+			app_usage_mins
+		) (
+			SELECT
+				stats.start_time,
+				stats.end_time,
+				stats.template_id,
+				stats.user_id,
+				stats.usage_mins,
+				latencies.median_latency_ms,
+				stats.app_usage_mins
+			FROM
+				stats
+			LEFT JOIN
+				latencies
+			ON
+				-- The latencies group-by ensures there at most one row.
+				latencies.start_time = stats.start_time
+				AND latencies.template_id = stats.template_id
+				AND latencies.user_id = stats.user_id
+		)
+		ON CONFLICT
+			(start_time, template_id, user_id)
+		DO UPDATE
+		SET
+			usage_mins = EXCLUDED.usage_mins,
+			median_latency_ms = EXCLUDED.median_latency_ms,
+			app_usage_mins = EXCLUDED.app_usage_mins
+		WHERE
+			(tus.*) IS DISTINCT FROM (EXCLUDED.*)
+		RETURNING
+			tus.start_time
+	),
+	-- The child writes below run in this same statement, so the foreign key
+	-- triggers fire once it completes and see the main rows the upsert above
+	-- added. The delete and the insert of each pair never touch the same row:
+	-- the delete matches names the recomputed bucket no longer has, the insert
+	-- only the names it does have.
+	--
+	-- The deletes test membership with NOT IN rather than NOT EXISTS on purpose.
+	-- The planner has no statistics for the recomputed CTE and estimates it at
+	-- a few rows, which turns NOT EXISTS into a nested loop that rescans the
+	-- CTE per candidate row, measured at 20 seconds per rollup. NOT IN is
+	-- planned as a hashed subplan built once, whatever the estimate. Every
+	-- column in the subquery is non-null, so the two forms delete the same
+	-- rows; the IS NOT NULL guard keeps that true if the CTE ever changes.
+	delete_families AS (
+		DELETE FROM
+			template_usage_stats_session_families AS families
+		USING
+			stats
+		WHERE
+			families.start_time = stats.start_time
+			AND families.template_id = stats.template_id
+			AND families.user_id = stats.user_id
+			AND (families.start_time, families.template_id, families.user_id, families.family) NOT IN (
+				SELECT time_bucket, template_id, user_id, name
+				FROM agent_stats_session_minutes
+				WHERE family_group = 1 AND name IS NOT NULL
+			)
+	),
+	upsert_families AS (
+		INSERT INTO template_usage_stats_session_families AS families (
+			start_time,
+			template_id,
+			user_id,
+			family,
+			usage_mins
+		) (
+			SELECT
+				time_bucket,
+				template_id,
+				user_id,
+				name,
+				usage_mins
+			FROM
+				agent_stats_session_minutes
+			WHERE
+				family_group = 1
+		)
+		ON CONFLICT
+			(start_time, template_id, user_id, family)
+		DO UPDATE
+		SET
+			usage_mins = EXCLUDED.usage_mins
+		WHERE
+			families.usage_mins IS DISTINCT FROM EXCLUDED.usage_mins
+	),
+	delete_apps AS (
+		DELETE FROM
+			template_usage_stats_session_apps AS apps
+		USING
+			stats
+		WHERE
+			apps.start_time = stats.start_time
+			AND apps.template_id = stats.template_id
+			AND apps.user_id = stats.user_id
+			AND (apps.start_time, apps.template_id, apps.user_id, apps.app_name) NOT IN (
+				SELECT time_bucket, template_id, user_id, name
+				FROM agent_stats_session_minutes
+				WHERE family_group = 0 AND name IS NOT NULL
+			)
 	)
 
-INSERT INTO template_usage_stats AS tus (
+INSERT INTO template_usage_stats_session_apps AS apps (
 	start_time,
-	end_time,
 	template_id,
 	user_id,
-	usage_mins,
-	median_latency_ms,
-	app_usage_mins,
-	session_app_usage_mins,
-	session_family_usage_mins
+	app_name,
+	usage_mins
 ) (
 	SELECT
-		stats.start_time,
-		stats.end_time,
-		stats.template_id,
-		stats.user_id,
-		stats.usage_mins,
-		latencies.median_latency_ms,
-		stats.app_usage_mins,
-		-- A bucket built from app stats alone saw no sessions, which is
-		-- recorded as no session usage rather than as unknown.
-		COALESCE(session_usage.session_app_usage_mins, '{}'::jsonb),
-		COALESCE(session_usage.session_family_usage_mins, '{}'::jsonb)
+		time_bucket,
+		template_id,
+		user_id,
+		name,
+		usage_mins
 	FROM
-		stats
-	LEFT JOIN
-		latencies
-	ON
-		-- The latencies group-by ensures there at most one row.
-		latencies.start_time = stats.start_time
-		AND latencies.template_id = stats.template_id
-		AND latencies.user_id = stats.user_id
-	LEFT JOIN
-		agent_stats_session_usage AS session_usage
-	ON
-		-- The session usage group-by ensures there is at most one row.
-		session_usage.time_bucket = stats.start_time
-		AND session_usage.template_id = stats.template_id
-		AND session_usage.user_id = stats.user_id
+		agent_stats_session_minutes
+	WHERE
+		family_group = 0
 )
 ON CONFLICT
-	(start_time, template_id, user_id)
+	(start_time, template_id, user_id, app_name)
 DO UPDATE
 SET
-	usage_mins = EXCLUDED.usage_mins,
-	median_latency_ms = EXCLUDED.median_latency_ms,
-	app_usage_mins = EXCLUDED.app_usage_mins,
-	session_app_usage_mins = EXCLUDED.session_app_usage_mins,
-	session_family_usage_mins = EXCLUDED.session_family_usage_mins
+	usage_mins = EXCLUDED.usage_mins
 WHERE
-	(tus.*) IS DISTINCT FROM (EXCLUDED.*)
+	apps.usage_mins IS DISTINCT FROM EXCLUDED.usage_mins
 `
 
 // This query aggregates the workspace_agent_stats and workspace_app_stats data
 // into a single table for efficient storage and querying. Half-hour buckets are
 // used to store the data, and the minutes are summed for each user and template
 // combination. The result is stored in the template_usage_stats table.
+//
+// Session usage is stored per app name and per app family in the child tables,
+// so the main row carries no session columns at all. Every recomputed bucket
+// rewrites its own child rows: names that disappeared are deleted, the rest
+// are upserted. The keys come from the computed set rather than from the main
+// upsert, because the no-op guard below suppresses main rows whose columns did
+// not change while their session usage still has to be corrected.
 func (q *sqlQuerier) UpsertTemplateUsageStats(ctx context.Context, appFamilies json.RawMessage) error {
 	_, err := q.db.ExecContext(ctx, upsertTemplateUsageStats, appFamilies)
 	return err

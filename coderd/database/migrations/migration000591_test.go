@@ -11,8 +11,52 @@ import (
 	"github.com/coder/coder/v2/testutil"
 )
 
+// stepTo advances the migrations to version and fails if it is never reached.
+func stepTo(t *testing.T, sqlDB *sql.DB, version uint) {
+	t.Helper()
+
+	next, err := migrations.Stepper(sqlDB)
+	require.NoError(t, err)
+	for {
+		got, more, err := next()
+		require.NoError(t, err)
+		if !more {
+			t.Fatalf("migration %d not found", version)
+		}
+		if got == version {
+			return
+		}
+	}
+}
+
+// familyRow is one row of template_usage_stats_session_families, or of
+// template_usage_stats_session_apps, which has the same shape.
+type familyRow struct {
+	name      string
+	usageMins int64
+}
+
+// sessionRows reads a child table ordered by name.
+func sessionRows(t *testing.T, tx *sql.Tx, table, nameColumn string) []familyRow {
+	t.Helper()
+
+	//nolint:gosec // Table and column names are constants in this test.
+	rows, err := tx.Query("SELECT " + nameColumn + ", usage_mins FROM " + table + " ORDER BY " + nameColumn)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var got []familyRow
+	for rows.Next() {
+		var row familyRow
+		require.NoError(t, rows.Scan(&row.name, &row.usageMins))
+		got = append(got, row)
+	}
+	require.NoError(t, rows.Err())
+	return got
+}
+
 // TestMigration000591TemplateUsageStatsSessionUsage covers the conversion of
-// the fixed per-family minute columns into the family map, which the
+// the fixed per-family minute columns into the family child table, which the
 // testdata/fixtures run does not reach: its template_usage_stats rows record
 // no session minutes, so the backfill matches zero rows in CI.
 //
@@ -20,21 +64,8 @@ import (
 func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 	t.Parallel()
 
-	const priorMigrationVersion = 590
-
 	sqlDB := testSQLDB(t)
-	next, err := migrations.Stepper(sqlDB)
-	require.NoError(t, err)
-	for {
-		version, more, err := next()
-		require.NoError(t, err)
-		if !more {
-			t.Fatalf("migration %d not found", priorMigrationVersion)
-		}
-		if version == priorMigrationVersion {
-			break
-		}
-	}
+	stepTo(t, sqlDB, 590)
 
 	ctx := testutil.Context(t, testutil.WaitSuperLong)
 	migrationSQL, err := os.ReadFile("000591_template_usage_stats_session_usage.up.sql")
@@ -64,43 +95,39 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 	}
 
 	t.Run("up", func(t *testing.T) {
-		// wantFamilyMins is ordered by start_time, matching the insert order.
-		// Per-app minutes stay null: the fixed columns only ever recorded the
-		// family, so there is nothing to attribute to an app name. The rollup
-		// re-upserts its rewind window and can later write a map for such a
-		// bucket, which this migration does not try to prevent.
+		// A bucket gets one family row per family it saw, and no app rows at
+		// all: the fixed columns only ever recorded the family, so per-app
+		// usage stays unknown rather than being invented from family totals.
 		tests := []struct {
-			name           string
-			mins           [][5]int
-			wantFamilyMins []string
+			name       string
+			mins       [][5]int
+			wantFamily []familyRow
 		}{
 			{name: "no rows"},
+			{name: "no session minutes", mins: [][5]int{{0, 0, 0, 0, 0}}},
 			{
-				name:           "no session minutes",
-				mins:           [][5]int{{0, 0, 0, 0, 0}},
-				wantFamilyMins: []string{`{}`},
-			},
-			{
-				name:           "every family",
-				mins:           [][5]int{{1, 2, 3, 4, 5}},
-				wantFamilyMins: []string{`{"ssh": 1, "sftp": 2, "reconnecting_pty": 3, "vscode": 4, "jetbrains": 5}`},
+				name: "every family",
+				mins: [][5]int{{1, 2, 3, 4, 5}},
+				wantFamily: []familyRow{
+					{"jetbrains", 5}, {"reconnecting_pty", 3}, {"sftp", 2}, {"ssh", 1}, {"vscode", 4},
+				},
 			},
 			{
 				// The rollup has never written sftp_mins, but a row that has
 				// a value must not lose it.
-				name:           "sftp only",
-				mins:           [][5]int{{0, 7, 0, 0, 0}},
-				wantFamilyMins: []string{`{"sftp": 7}`},
+				name:       "sftp only",
+				mins:       [][5]int{{0, 7, 0, 0, 0}},
+				wantFamily: []familyRow{{"sftp", 7}},
 			},
 			{
-				name:           "zero minutes are dropped per family",
-				mins:           [][5]int{{5, 0, 0, 6, 0}},
-				wantFamilyMins: []string{`{"ssh": 5, "vscode": 6}`},
+				name:       "zero minutes produce no row",
+				mins:       [][5]int{{5, 0, 0, 6, 0}},
+				wantFamily: []familyRow{{"ssh", 5}, {"vscode", 6}},
 			},
 			{
-				name:           "mixed rows",
-				mins:           [][5]int{{0, 0, 0, 0, 0}, {2, 0, 0, 0, 0}, {0, 0, 0, 0, 3}},
-				wantFamilyMins: []string{`{}`, `{"ssh": 2}`, `{"jetbrains": 3}`},
+				name:       "mixed rows",
+				mins:       [][5]int{{0, 0, 0, 0, 0}, {2, 0, 0, 0, 0}, {0, 0, 0, 0, 3}},
+				wantFamily: []familyRow{{"jetbrains", 3}, {"ssh", 2}},
 			},
 		}
 
@@ -115,32 +142,14 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 				_, err = tx.ExecContext(ctx, string(migrationSQL))
 				require.NoError(t, err)
 
-				rows, err := tx.QueryContext(ctx, `
-					SELECT session_family_usage_mins, session_app_usage_mins
-					FROM template_usage_stats
-					ORDER BY start_time
-				`)
-				require.NoError(t, err)
-				defer rows.Close()
-				var gotFamilyMins []string
-				for rows.Next() {
-					var familyMins []byte
-					var appMins []byte
-					require.NoError(t, rows.Scan(&familyMins, &appMins))
-					require.Nil(t, appMins, "per-app minutes are unknown for rows the fixed columns produced")
-					gotFamilyMins = append(gotFamilyMins, string(familyMins))
-				}
-				require.NoError(t, rows.Err())
-				require.Len(t, gotFamilyMins, len(tt.wantFamilyMins))
-				for i, want := range tt.wantFamilyMins {
-					require.JSONEq(t, want, gotFamilyMins[i])
-				}
+				require.Equal(t, tt.wantFamily, sessionRows(t, tx, "template_usage_stats_session_families", "family"))
+				require.Empty(t, sessionRows(t, tx, "template_usage_stats_session_apps", "app_name"))
 			})
 		}
 	})
 
-	// The map is written before the fixed columns are dropped, so a round trip
-	// keeps the minutes the fixed columns have room for.
+	// The child rows are written before the fixed columns are dropped, so a
+	// round trip keeps the minutes the fixed columns have room for.
 	t.Run("round trip", func(t *testing.T) {
 		tx, err := sqlDB.BeginTx(ctx, nil)
 		require.NoError(t, err)
@@ -167,7 +176,7 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 	})
 
 	// The fixed columns have room for five families and no room at all for
-	// per-app minutes, so anything else the maps recorded is lost.
+	// per-app minutes, so anything else the child tables recorded is lost.
 	t.Run("down restores known families only", func(t *testing.T) {
 		tx, err := sqlDB.BeginTx(ctx, nil)
 		require.NoError(t, err)
@@ -179,14 +188,37 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO template_usage_stats (
 				start_time, end_time, template_id, user_id, median_latency_ms,
-				usage_mins, app_usage_mins, session_app_usage_mins,
-				session_family_usage_mins
+				usage_mins, app_usage_mins
 			) VALUES (
 				date_trunc('hour', statement_timestamp()),
 				date_trunc('hour', statement_timestamp()) + interval '30 minutes',
-				gen_random_uuid(), gen_random_uuid(), NULL, 30, NULL,
-				'{"vscode": 2, "some_future_ide": 3}'::jsonb,
-				'{"vscode": 2, "some_future_family": 3}'::jsonb
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid,
+				NULL, 30, NULL
+			)
+		`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO template_usage_stats_session_families (
+				start_time, template_id, user_id, family, usage_mins
+			) VALUES (
+				date_trunc('hour', statement_timestamp()),
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid, 'vscode', 2
+			), (
+				date_trunc('hour', statement_timestamp()),
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid, 'some_future_family', 3
+			)
+		`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO template_usage_stats_session_apps (
+				start_time, template_id, user_id, app_name, usage_mins
+			) VALUES (
+				date_trunc('hour', statement_timestamp()),
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid, 'some_future_ide', 3
 			)
 		`)
 		require.NoError(t, err)
@@ -206,21 +238,24 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 		require.EqualValues(t, 0, reconnectingPTY)
 		require.EqualValues(t, 0, jetbrains)
 
-		// The columns the up migration dropped are the only ones left, so the
-		// per-app minutes and the unknown family have nowhere to be read from.
-		var columns int
+		// Both child tables are gone, so the future family and the per-app
+		// minutes have nowhere to be read from.
+		var tables int
 		err = tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM information_schema.columns
-			WHERE table_name = 'template_usage_stats'
-				AND column_name IN ('session_app_usage_mins', 'session_family_usage_mins')
-		`).Scan(&columns)
+			SELECT COUNT(*) FROM information_schema.tables
+			WHERE table_name IN (
+				'template_usage_stats_session_families',
+				'template_usage_stats_session_apps'
+			)
+		`).Scan(&tables)
 		require.NoError(t, err)
-		require.Zero(t, columns)
+		require.Zero(t, tables)
 	})
 
-	// A row the rollup writes with no session activity records an empty map
-	// rather than null, which the NOT NULL column enforces.
-	t.Run("family map is not null", func(t *testing.T) {
+	// The child tables only hold session usage of buckets that exist, and they
+	// follow their bucket when it is deleted, which is how dbpurge and the
+	// retention deletes stay correct without knowing about them.
+	t.Run("child rows require and follow their bucket", func(t *testing.T) {
 		tx, err := sqlDB.BeginTx(ctx, nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = tx.Rollback() })
@@ -228,25 +263,24 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 		_, err = tx.ExecContext(ctx, string(migrationSQL))
 		require.NoError(t, err)
 
-		// A failed statement aborts the transaction, so keep it inside a
-		// savepoint the rest of the test can roll back to.
-		_, err = tx.ExecContext(ctx, `SAVEPOINT before_null_insert`)
-		require.NoError(t, err)
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO template_usage_stats (
-				start_time, end_time, template_id, user_id, median_latency_ms,
-				usage_mins, app_usage_mins, session_family_usage_mins
-			) VALUES (
-				date_trunc('hour', statement_timestamp()),
-				date_trunc('hour', statement_timestamp()) + interval '30 minutes',
-				gen_random_uuid(), gen_random_uuid(), NULL, 30, NULL, NULL
-			)
-		`)
-		require.ErrorContains(t, err, "session_family_usage_mins")
-		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT before_null_insert`)
-		require.NoError(t, err)
+		for _, table := range []string{
+			"template_usage_stats_session_families",
+			"template_usage_stats_session_apps",
+		} {
+			_, err = tx.ExecContext(ctx, `SAVEPOINT before_orphan`)
+			require.NoError(t, err)
+			//nolint:gosec // The table name is a constant in this test.
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO `+table+` VALUES (
+					date_trunc('hour', statement_timestamp()),
+					gen_random_uuid(), gen_random_uuid(), 'ssh', 1
+				)
+			`)
+			require.ErrorContains(t, err, "violates foreign key constraint", "%s", table)
+			_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT before_orphan`)
+			require.NoError(t, err)
+		}
 
-		// Omitting it entirely falls back to the empty map.
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO template_usage_stats (
 				start_time, end_time, template_id, user_id, median_latency_ms,
@@ -254,20 +288,37 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 			) VALUES (
 				date_trunc('hour', statement_timestamp()),
 				date_trunc('hour', statement_timestamp()) + interval '30 minutes',
-				gen_random_uuid(), gen_random_uuid(), NULL, 30, NULL
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid,
+				NULL, 30, NULL
+			)
+		`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO template_usage_stats_session_families (
+				start_time, template_id, user_id, family, usage_mins
+			) VALUES (
+				date_trunc('hour', statement_timestamp()),
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid, 'ssh', 1
+			)
+		`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO template_usage_stats_session_apps (
+				start_time, template_id, user_id, app_name, usage_mins
+			) VALUES (
+				date_trunc('hour', statement_timestamp()),
+				'22222222-2222-2222-2222-222222222222'::uuid,
+				'11111111-1111-1111-1111-111111111111'::uuid, 'zed', 1
 			)
 		`)
 		require.NoError(t, err)
 
-		var familyMins []byte
-		var appMins []byte
-		err = tx.QueryRowContext(ctx, `
-			SELECT session_family_usage_mins, session_app_usage_mins
-			FROM template_usage_stats
-		`).Scan(&familyMins, &appMins)
+		_, err = tx.ExecContext(ctx, `DELETE FROM template_usage_stats`)
 		require.NoError(t, err)
-		require.JSONEq(t, `{}`, string(familyMins))
-		require.Nil(t, appMins)
+		require.Empty(t, sessionRows(t, tx, "template_usage_stats_session_families", "family"))
+		require.Empty(t, sessionRows(t, tx, "template_usage_stats_session_apps", "app_name"))
 	})
 }
 
@@ -281,21 +332,8 @@ func TestMigration000591TemplateUsageStatsSessionUsage(t *testing.T) {
 func TestMigration000591ChainFrom589(t *testing.T) {
 	t.Parallel()
 
-	const priorMigrationVersion = 589
-
 	sqlDB := testSQLDB(t)
-	next, err := migrations.Stepper(sqlDB)
-	require.NoError(t, err)
-	for {
-		version, more, err := next()
-		require.NoError(t, err)
-		if !more {
-			t.Fatalf("migration %d not found", priorMigrationVersion)
-		}
-		if version == priorMigrationVersion {
-			break
-		}
-	}
+	stepTo(t, sqlDB, 589)
 
 	ctx := testutil.Context(t, testutil.WaitSuperLong)
 	up590, err := os.ReadFile("000590_workspace_agent_session_counts.up.sql")
@@ -388,16 +426,10 @@ func TestMigration000591ChainFrom589(t *testing.T) {
 	require.JSONEq(t, `{"vscode": 4, "ssh": 2}`, gotCounts[1], "backlogged, over a day old")
 	require.JSONEq(t, `{"vscode": 2, "ssh": 1}`, gotCounts[2], "backlogged, recent")
 
-	// 591 converted the fixed family minutes and left per-app minutes unknown.
-	var familyMins []byte
-	var appMins []byte
-	err = tx.QueryRowContext(ctx, `
-		SELECT session_family_usage_mins, session_app_usage_mins
-		FROM template_usage_stats
-	`).Scan(&familyMins, &appMins)
-	require.NoError(t, err)
-	require.JSONEq(t, `{"ssh": 3, "sftp": 2, "vscode": 4}`, string(familyMins))
-	require.Nil(t, appMins)
+	// 591 converted the fixed family minutes and recorded no per-app usage.
+	require.Equal(t, []familyRow{{"sftp", 2}, {"ssh", 3}, {"vscode", 4}},
+		sessionRows(t, tx, "template_usage_stats_session_families", "family"))
+	require.Empty(t, sessionRows(t, tx, "template_usage_stats_session_apps", "app_name"))
 
 	// Back down: 591 restores the fixed columns, then 590 restores the fixed
 	// session counts, landing on the 589 schema.
@@ -429,14 +461,18 @@ func TestMigration000591ChainFrom589(t *testing.T) {
 	require.EqualValues(t, 2, backloggedVSCode)
 	require.EqualValues(t, 1, backloggedSSH)
 
-	// The columns both migrations added are gone, so the 589 schema is back.
-	var mapColumns int
+	// Everything both migrations added is gone, so the 589 schema is back.
+	var leftovers int
 	err = tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM information_schema.columns
-		WHERE (table_name = 'template_usage_stats'
-				AND column_name IN ('session_app_usage_mins', 'session_family_usage_mins'))
-			OR (table_name = 'workspace_agent_stats' AND column_name = 'session_counts')
-	`).Scan(&mapColumns)
+		SELECT
+			(SELECT COUNT(*) FROM information_schema.columns
+				WHERE table_name = 'workspace_agent_stats' AND column_name = 'session_counts')
+			+ (SELECT COUNT(*) FROM information_schema.tables
+				WHERE table_name IN (
+					'template_usage_stats_session_families',
+					'template_usage_stats_session_apps'
+				))
+	`).Scan(&leftovers)
 	require.NoError(t, err)
-	require.Zero(t, mapColumns)
+	require.Zero(t, leftovers)
 }
