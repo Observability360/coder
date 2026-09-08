@@ -120,7 +120,7 @@ export const SpendSummaryView: FC<SpendSummaryViewProps> = ({
 
 			{summary.request_count === 0 ? (
 				<p className="py-12 text-center text-content-secondary">
-					No AI Gateway spend in the selected period.
+					No AI Gateway spend matches these filters.
 				</p>
 			) : (
 				<>

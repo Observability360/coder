@@ -680,7 +680,7 @@ export const DrillInEmpty: Story = {
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
 		await expect(
-			canvas.getByText("No AI Gateway spend in the selected period."),
+			canvas.getByText("No AI Gateway spend matches these filters."),
 		).toBeVisible();
 	},
 };
