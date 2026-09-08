@@ -63,7 +63,7 @@ import { isBelowMdViewport, isMobileViewport } from "#/utils/mobile";
 import { chatWidthClass, useChatFullWidth } from "../hooks/useChatFullWidth";
 import { useMCPOAuthFlow } from "../hooks/useMCPOAuthFlow";
 import { useOverflowCount } from "../hooks/useOverflowCount";
-import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+import { useAudioTranscription } from "../hooks/useAudioTranscription";
 import {
 	DEFAULT_AGENT_CHAT_SEND_SHORTCUT,
 	MODIFIER_AGENT_CHAT_SEND_SHORTCUT,
@@ -502,21 +502,25 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		// Keep in sync with resetPromptCycle above.
 	}, [remountKey]);
 
-	const speech = useSpeechRecognition();
+	const speech = useAudioTranscription();
 	const [preRecordingValue, setPreRecordingValue] = useState<string>("");
 
+	// Unlike the old Web Speech-based hook (live word-by-word interim
+	// results, fired only WHILE isRecording), transcript here changes
+	// exactly ONCE per recording — after stop() triggers the
+	// record→upload→transcribe round trip and isRecording has already
+	// flipped back to false. Gating on transcript itself (not isRecording)
+	// is what makes the one-shot insertion fire correctly.
 	useEffect(() => {
-		if (!speech.isRecording) return;
+		if (!speech.transcript) return;
 		const editor = internalRef.current;
 		if (!editor) return;
 		editor.clear();
 		const combined = preRecordingValue
 			? `${preRecordingValue} ${speech.transcript}`
 			: speech.transcript;
-		if (combined) {
-			editor.insertText(combined);
-		}
-	}, [speech.transcript, speech.isRecording, preRecordingValue]);
+		editor.insertText(combined);
+	}, [speech.transcript, preRecordingValue]);
 
 	// Forward a stable delegating handle to the parent-supplied inputRef.
 	// Delegates lazily to internalRef.current so methods see the current
@@ -1611,25 +1615,32 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 											? handleCancelRecording
 											: handleStartRecording
 									}
-									disabled={isDisabled}
+									disabled={isDisabled || speech.isTranscribing}
 									aria-label={
 										speech.isRecording ? "Cancel voice input" : "Voice input"
 									}
 								>
-									{speech.isRecording ? (
+									{speech.isTranscribing ? (
+										<Spinner size="sm" loading aria-hidden="true" />
+									) : speech.isRecording ? (
 										<XIcon />
 									) : (
 										<MicIcon strokeWidth={1.5} />
 									)}
 								</Button>
-								{speech.error && !speech.isRecording && (
+								{speech.isTranscribing && (
+									<span className="text-2xs text-content-secondary">
+										Transcrevendo...
+									</span>
+								)}
+								{speech.error && !speech.isRecording && !speech.isTranscribing && (
 									<span
 										className="text-2xs text-content-destructive"
 										role="alert"
 									>
 										{speech.error === "not-allowed"
 											? "Mic access denied"
-											: "Voice input failed"}
+											: "Transcription failed"}
 									</span>
 								)}
 							</>
@@ -1688,10 +1699,14 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 										onClick={
 											speech.isRecording ? handleAcceptRecording : handleSubmit
 										}
-										disabled={speech.isRecording ? false : !canSend}
+										disabled={
+											speech.isRecording
+												? false
+												: speech.isTranscribing || !canSend
+										}
 										aria-keyshortcuts={sendButtonKeyShortcuts}
 									>
-										{isLoading ? (
+										{isLoading || speech.isTranscribing ? (
 											<Spinner size="sm" loading aria-hidden="true" />
 										) : speech.isRecording ? (
 											<CheckIcon />
@@ -1708,7 +1723,9 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								<TooltipContent side="top">
 									{speech.isRecording
 										? "Accept voice input"
-										: `${sendButtonLabel}: ${sendShortcutLabel}`}
+										: speech.isTranscribing
+											? "Transcrevendo..."
+											: `${sendButtonLabel}: ${sendShortcutLabel}`}
 								</TooltipContent>
 							</Tooltip>
 						)}

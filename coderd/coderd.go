@@ -1489,6 +1489,13 @@ func New(options *Options) *API {
 			r.Get("/{fileID}", api.fileByID)
 			r.Post("/", api.postFile)
 		})
+		r.Route("/audio-transcriptions", func(r chi.Router) {
+			r.Use(
+				apiKeyMiddleware,
+				httpmw.RateLimit(options.FilesRateLimit, time.Minute),
+			)
+			r.Post("/", api.postAudioTranscription)
+		})
 		r.Route("/external-auth", func(r chi.Router) {
 			r.Use(
 				apiKeyMiddleware,

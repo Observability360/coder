@@ -1693,6 +1693,11 @@ communicating directly.`,
 			YAML:        "chat",
 			Description: "Configure the background chat processing daemon.",
 		}
+		deploymentGroupTranscription = serpent.Group{
+			Name:        "Transcription",
+			YAML:        "transcription",
+			Description: "Configure server-side audio transcription proxying (POST /api/v2/audio-transcriptions).",
+		}
 		deploymentGroupAIGateway = serpent.Group{
 			Name: "AI Gateway",
 			YAML: "ai_gateway",
@@ -4421,6 +4426,61 @@ Write out the current server config as YAML to stdout.`,
 			YAML:        "aiGatewayRoutingEnabled",
 			Hidden:      true,
 		},
+		// Audio Transcription Options — proxies POST /api/v2/audio-transcriptions
+		// to a single OpenAI-Whisper-compatible upstream (e.g. OmniRoute) so the
+		// upstream API key never reaches the browser. Disabled unless both URL
+		// and API key are set.
+		{
+			Name:        "Transcription: URL",
+			Description: "OpenAI-Whisper-compatible URL to proxy audio transcription requests to (e.g. an OmniRoute deployment's /v1/audio/transcriptions). Transcription is disabled unless this and --transcription-api-key are both set.",
+			Flag:        "transcription-url",
+			Env:         "CODER_TRANSCRIPTION_URL",
+			Value:       &c.AI.Transcription.URL,
+			Default:     "",
+			Group:       &deploymentGroupTranscription,
+			YAML:        "url",
+		},
+		{
+			Name:        "Transcription: API Key",
+			Description: "API key sent as a Bearer token to the transcription URL. Held server-side only — never sent to the browser.",
+			Flag:        "transcription-api-key",
+			Env:         "CODER_TRANSCRIPTION_API_KEY",
+			Value:       &c.AI.Transcription.APIKey,
+			Default:     "",
+			Group:       &deploymentGroupTranscription,
+			Annotations: serpent.Annotations{}.Mark(annotationSecretKey, "true"),
+		},
+		{
+			Name:        "Transcription: Model",
+			Description: "Model id sent to the transcription URL (e.g. a Whisper-compatible model configured on the OmniRoute side).",
+			Flag:        "transcription-model",
+			Env:         "CODER_TRANSCRIPTION_MODEL",
+			Value:       &c.AI.Transcription.Model,
+			Default:     "whisper-1",
+			Group:       &deploymentGroupTranscription,
+			YAML:        "model",
+		},
+		{
+			Name:        "Transcription: Language",
+			Description: "ISO-639-1 language hint sent to the transcription URL (e.g. \"pt\" for Portuguese). Empty lets the provider auto-detect.",
+			Flag:        "transcription-language",
+			Env:         "CODER_TRANSCRIPTION_LANGUAGE",
+			Value:       &c.AI.Transcription.Language,
+			Default:     "",
+			Group:       &deploymentGroupTranscription,
+			YAML:        "language",
+		},
+		{
+			Name:        "Transcription: Timeout",
+			Description: "Maximum time to wait for a transcription response.",
+			Flag:        "transcription-timeout",
+			Env:         "CODER_TRANSCRIPTION_TIMEOUT",
+			Value:       &c.AI.Transcription.Timeout,
+			Default:     (30 * time.Second).String(),
+			Group:       &deploymentGroupTranscription,
+			YAML:        "timeout",
+			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
+		},
 		// AI Bridge Options (deprecated in favor of AI Gateway options)
 		{
 			Name:        "AI Bridge Enabled",
@@ -5104,10 +5164,26 @@ type ChatConfig struct {
 	AIGatewayRoutingEnabled serpent.Bool `json:"ai_gateway_routing_enabled" typescript:",notnull" swaggerignore:"true"`
 }
 
+// TranscriptionConfig proxies POST /api/v2/audio-transcriptions to a single
+// OpenAI-Whisper-compatible upstream (e.g. an OmniRoute deployment's
+// /v1/audio/transcriptions). The upstream API key is held server-side only —
+// coderd is the only party that ever sees it; the browser talks to coderd's
+// own session-authenticated endpoint and never touches the upstream
+// credential. Disabled (transcription endpoint returns 404) unless both URL
+// and APIKey are set.
+type TranscriptionConfig struct {
+	URL      serpent.URL      `json:"url" typescript:",notnull"`
+	APIKey   serpent.String   `json:"api_key" typescript:",notnull"`
+	Model    serpent.String   `json:"model" typescript:",notnull"`
+	Language serpent.String   `json:"language" typescript:",notnull"`
+	Timeout  serpent.Duration `json:"timeout" typescript:",notnull"`
+}
+
 type AIConfig struct {
 	BridgeConfig      AIBridgeConfig      `json:"bridge,omitempty"`
 	BridgeProxyConfig AIBridgeProxyConfig `json:"aibridge_proxy,omitempty"`
 	Chat              ChatConfig          `json:"chat,omitempty" typescript:",notnull"`
+	Transcription     TranscriptionConfig `json:"transcription,omitempty" typescript:",notnull"`
 }
 
 type TemplateBuilderConfig struct {
