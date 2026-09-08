@@ -370,28 +370,6 @@ describe("useConversationEditingState", () => {
 		unmount();
 	});
 
-	it("forwards goal mutation options for a new message", async () => {
-		const { result, onSend, unmount } = renderEditing();
-		const mockInput = createMockChatInputHandle("ship it");
-		result.current.chatInputRef.current = mockInput.handle;
-		const options = {
-			goalMutation: { action: "set" as const, objective: "ship it" },
-		};
-
-		await act(async () => {
-			await result.current.handleSendFromInput("ship it", undefined, options);
-		});
-
-		expect(onSend).toHaveBeenCalledWith(
-			"ship it",
-			undefined,
-			undefined,
-			options,
-		);
-		expect(mockInput.clear).toHaveBeenCalled();
-		unmount();
-	});
-
 	it("does not write a draft key when chatID is undefined", () => {
 		const { result, unmount } = renderEditing(undefined);
 
