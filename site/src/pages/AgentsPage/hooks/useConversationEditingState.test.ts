@@ -263,7 +263,7 @@ describe("useConversationEditingState", () => {
 		// the same text, so the editor is forced to reinitialize.
 		expect(result.current.remountKey).toBe(remountKeyAfterSend + 1);
 		expect(result.current.editorInitialValue).toBe("hello");
-		expect(onSend).toHaveBeenCalledWith("hello", undefined, 7);
+		expect(onSend).toHaveBeenCalledWith("hello", undefined, 7, undefined);
 		unmount();
 	});
 
@@ -281,7 +281,7 @@ describe("useConversationEditingState", () => {
 			await result.current.handleSendFromInput("hello", attachments);
 		});
 
-		expect(onSend).toHaveBeenCalledWith("hello", attachments, 7);
+		expect(onSend).toHaveBeenCalledWith("hello", attachments, 7, undefined);
 		unmount();
 	});
 
@@ -358,10 +358,37 @@ describe("useConversationEditingState", () => {
 			await result.current.handleSendFromInput("hello");
 		});
 
-		expect(onSend).toHaveBeenCalledWith("hello", undefined, undefined);
+		expect(onSend).toHaveBeenCalledWith(
+			"hello",
+			undefined,
+			undefined,
+			undefined,
+		);
 		expect(mockInput.clear).toHaveBeenCalled();
 		expect(mockInput.focus).toHaveBeenCalled();
 		expect(localStorage.getItem(expectedKey)).toBeNull();
+		unmount();
+	});
+
+	it("forwards goal mutation options for a new message", async () => {
+		const { result, onSend, unmount } = renderEditing();
+		const mockInput = createMockChatInputHandle("ship it");
+		result.current.chatInputRef.current = mockInput.handle;
+		const options = {
+			goalMutation: { action: "set" as const, objective: "ship it" },
+		};
+
+		await act(async () => {
+			await result.current.handleSendFromInput("ship it", undefined, options);
+		});
+
+		expect(onSend).toHaveBeenCalledWith(
+			"ship it",
+			undefined,
+			undefined,
+			options,
+		);
+		expect(mockInput.clear).toHaveBeenCalled();
 		unmount();
 	});
 
@@ -395,13 +422,18 @@ describe("useConversationEditingState", () => {
 			getValue: vi.fn().mockReturnValue(""),
 			addFileReference: vi.fn(),
 			getContentParts: vi.fn().mockReturnValue([]),
-		}; // The hook exposes chatInputRef – assign the mock to it.
+		};
 		result.current.chatInputRef.current = mockInputRef;
 
 		await act(async () => {
 			result.current.handleSendFromInput("hello");
 			await vi.waitFor(() => {
-				expect(onSend).toHaveBeenCalledWith("hello", undefined, undefined);
+				expect(onSend).toHaveBeenCalledWith(
+					"hello",
+					undefined,
+					undefined,
+					undefined,
+				);
 			});
 		});
 
