@@ -170,7 +170,9 @@ export const PeriodAppliesToUsersAndBreakdowns: Story = {
 		await expect(
 			await canvas.findByRole("table", { name: "Spend by provider" }),
 		).toBeVisible();
-		await userEvent.click(canvas.getByRole("button", { name: /Feb 10, 2026/ }));
+		await userEvent.click(
+			canvas.getByRole("button", { name: /Feb 10, 2026.*Mar 11, 2026/ }),
+		);
 		await userEvent.click(
 			await body.findByRole("button", { name: "Last 7 days" }),
 		);

@@ -18,9 +18,11 @@ import { formatTokenCount } from "#/utils/analytics";
 import { formatCostMicros } from "#/utils/currency";
 import { paginateItems } from "#/utils/paginateItems";
 import { CostCell } from "./CostCell";
-import { unpricedRequestsMessage } from "./unpricedRequests";
 
 const BREAKDOWN_PAGE_SIZE = 10;
+
+const unpricedRequestsMessage = (count: number): string =>
+	`Cost is unavailable for ${count.toLocaleString("en-US")} ${count === 1 ? "request" : "requests"}. The total excludes that usage.`;
 
 interface SpendSummaryViewProps {
 	summary: TypesGen.AIGatewaySpendUserSummary | undefined;

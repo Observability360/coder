@@ -24,12 +24,38 @@ import {
 } from "#/components/Table/Table";
 import { formatTokenCount } from "#/utils/analytics";
 import type { SpendUsersQuery } from "../SpendPageView";
-import { spendSortColumns, spendUsersSort } from "../utils/sort";
 import { CostCell } from "./CostCell";
 import { RetentionNotice } from "./RetentionNotice";
 import { SpendSectionHeader } from "./SpendSectionHeader";
 
 export const userSearchParam = "user";
+
+const spendSortColumns: {
+	field: TypesGen.AIGatewaySpendSortBy;
+	label: string;
+}[] = [
+	{ field: "username", label: "User" },
+	{ field: "total_cost_micros", label: "Cost" },
+	{ field: "request_count", label: "Requests" },
+	{ field: "session_count", label: "Sessions" },
+	{ field: "input_tokens", label: "Input" },
+	{ field: "output_tokens", label: "Output" },
+	{ field: "cache_read_input_tokens", label: "Cache read" },
+	{ field: "cache_write_input_tokens", label: "Cache write" },
+];
+
+/** Resolves URL sorting to the supported server fields and defaults. */
+export function spendUsersSort(params: URLSearchParams): {
+	sort_by: TypesGen.AIGatewaySpendSortBy;
+	sort_order: TypesGen.AIGatewaySpendSortOrder;
+} {
+	return {
+		sort_by:
+			spendSortColumns.find(({ field }) => field === params.get("sort_by"))
+				?.field ?? "total_cost_micros",
+		sort_order: params.get("sort_order") === "asc" ? "asc" : "desc",
+	};
+}
 
 // The list's query string travels in the drill-in's location state so Back
 // can tell whether the history entry beneath it is the list it would show.

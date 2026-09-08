@@ -29,10 +29,10 @@ import { pageTitle } from "#/utils/page";
 import type { SpendDimensions } from "./components/SpendFilters";
 import {
 	spendListSearchFromState,
+	spendUsersSort,
 	userSearchParam,
 } from "./components/SpendUsersTable";
 import { SpendPageView } from "./SpendPageView";
-import { spendUsersSort } from "./utils/sort";
 
 const startDateSearchParam = "startDate";
 const endDateSearchParam = "endDate";

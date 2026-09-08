@@ -1,3 +1,4 @@
+import { ChevronLeftIcon } from "lucide-react";
 import type { FC, ReactNode } from "react";
 import { Link as RouterLink } from "react-router";
 import { getErrorMessage } from "#/api/errors";
@@ -9,7 +10,6 @@ import { useFilterParamsKey } from "#/components/Filter/Filter";
 import { Link } from "#/components/Link/Link";
 import { Spinner } from "#/components/Spinner/Spinner";
 import { queryWithTimeRange } from "#/pages/AIBridgePage/ListSessionsPage/timeRange";
-import { BackButton } from "./BackButton";
 import { RetentionNotice } from "./RetentionNotice";
 import type { SpendDimensions } from "./SpendFilters";
 import { SpendSectionHeader } from "./SpendSectionHeader";
@@ -24,7 +24,6 @@ interface SpendDrillInViewProps {
 	filters: ReactNode;
 	dimensions: SpendDimensions;
 	queryDateRange: DateRangeValue;
-	dateRangeLabel: string;
 	summaryData: TypesGen.AIGatewaySpendUserSummary | undefined;
 	isSummaryLoading: boolean;
 	summaryError: unknown;
@@ -69,7 +68,6 @@ export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 	filters,
 	dimensions,
 	queryDateRange,
-	dateRangeLabel,
 	summaryData,
 	isSummaryLoading,
 	summaryError,
@@ -78,7 +76,14 @@ export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 	const header = (
 		<>
 			<div>
-				<BackButton onClick={onBack} />
+				<button
+					type="button"
+					onClick={onBack}
+					className="mb-4 inline-flex cursor-pointer items-center gap-0.5 border-0 bg-transparent p-0 text-sm text-content-secondary transition-colors hover:text-content-primary"
+				>
+					<ChevronLeftIcon className="size-4" />
+					Back
+				</button>
 				<SpendSectionHeader
 					title="Spend details"
 					description="AI Gateway spend for a single user in the selected period and filters."
@@ -129,18 +134,15 @@ export const SpendDrillInView: FC<SpendDrillInViewProps> = ({
 					src={selectedUser.avatar_url}
 					imgFallbackText={selectedUser.username}
 				/>
-				<div className="flex min-w-0 flex-col items-end gap-1 text-xs text-content-secondary">
-					<div>{dateRangeLabel}</div>
-					{summaryData && !hasEmptyAppliedWindow(summaryData) && (
-						<Link asChild showExternalIcon={false} size="sm">
-							<RouterLink
-								to={sessionsHref(selectedUser.id, dimensions, summaryData)}
-							>
-								View sessions
-							</RouterLink>
-						</Link>
-					)}
-				</div>
+				{summaryData && !hasEmptyAppliedWindow(summaryData) && (
+					<Link asChild showExternalIcon={false} size="sm">
+						<RouterLink
+							to={sessionsHref(selectedUser.id, dimensions, summaryData)}
+						>
+							View sessions
+						</RouterLink>
+					</Link>
+				)}
 			</div>
 			{summaryData && (
 				<RetentionNotice
