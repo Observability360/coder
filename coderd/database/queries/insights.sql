@@ -86,61 +86,86 @@ ORDER BY
 -- workspaces in a given timeframe. The template IDs, active users, and
 -- usage_seconds all reflect any usage in the template, including apps.
 --
+-- Session usage is returned per app family exactly as the rollup recorded it,
+-- so a family the rollup learns about later is reported without a change
+-- here.
+--
 -- When combining data from multiple templates, we must make a guess at
 -- how the user behaved for the 30 minute interval. In this case we make
 -- the assumption that if the user used two workspaces for 15 minutes,
 -- they did so sequentially, thus we sum the usage up to a maximum of
 -- 30 minutes with LEAST(SUM(n), 30).
 WITH
+	stats AS (
+		SELECT
+			start_time,
+			template_id,
+			user_id,
+			usage_mins,
+			session_family_usage_mins
+		FROM
+			template_usage_stats
+		WHERE
+			start_time >= @start_time::timestamptz
+			AND end_time <= @end_time::timestamptz
+			AND CASE WHEN COALESCE(array_length(@template_ids::uuid[], 1), 0) > 0 THEN template_id = ANY(@template_ids::uuid[]) ELSE TRUE END
+	),
 	insights AS (
 		SELECT
 			user_id,
 			-- See motivation in GetTemplateInsights for LEAST(SUM(n), 30).
-			LEAST(SUM(usage_mins), 30) AS usage_mins,
-			LEAST(SUM(ssh_mins), 30) AS ssh_mins,
-			LEAST(SUM(sftp_mins), 30) AS sftp_mins,
-			LEAST(SUM(reconnecting_pty_mins), 30) AS reconnecting_pty_mins,
-			LEAST(SUM(vscode_mins), 30) AS vscode_mins,
-			LEAST(SUM(jetbrains_mins), 30) AS jetbrains_mins
+			LEAST(SUM(usage_mins), 30) AS usage_mins
 		FROM
-			template_usage_stats
-		WHERE
-			start_time >= @start_time::timestamptz
-			AND end_time <= @end_time::timestamptz
-			AND CASE WHEN COALESCE(array_length(@template_ids::uuid[], 1), 0) > 0 THEN template_id = ANY(@template_ids::uuid[]) ELSE TRUE END
+			stats
 		GROUP BY
 			start_time, user_id
 	),
+	family_insights AS (
+		-- Same interval and cap as insights, one row per family instead of
+		-- one column per family, so the set of families lives in the data.
+		SELECT
+			family.name AS family,
+			LEAST(SUM(family.mins::bigint), 30) AS usage_mins
+		FROM
+			stats, jsonb_each_text(stats.session_family_usage_mins) AS family(name, mins)
+		GROUP BY
+			stats.start_time, stats.user_id, family.name
+	),
+	family_usage AS (
+		SELECT
+			family,
+			(SUM(usage_mins) * 60)::bigint AS usage_seconds
+		FROM
+			family_insights
+		GROUP BY
+			family
+	),
+	family_templates AS (
+		SELECT
+			family.name AS family,
+			array_agg(DISTINCT stats.template_id) AS template_ids
+		FROM
+			stats, jsonb_each_text(stats.session_family_usage_mins) AS family(name, mins)
+		WHERE
+			family.mins::bigint > 0
+		GROUP BY
+			family.name
+	),
 	templates AS (
 		SELECT
-			array_agg(DISTINCT template_id) AS template_ids,
-			array_agg(DISTINCT template_id) FILTER (WHERE ssh_mins > 0) AS ssh_template_ids,
-			array_agg(DISTINCT template_id) FILTER (WHERE sftp_mins > 0) AS sftp_template_ids,
-			array_agg(DISTINCT template_id) FILTER (WHERE reconnecting_pty_mins > 0) AS reconnecting_pty_template_ids,
-			array_agg(DISTINCT template_id) FILTER (WHERE vscode_mins > 0) AS vscode_template_ids,
-			array_agg(DISTINCT template_id) FILTER (WHERE jetbrains_mins > 0) AS jetbrains_template_ids
+			array_agg(DISTINCT template_id) AS template_ids
 		FROM
-			template_usage_stats
-		WHERE
-			start_time >= @start_time::timestamptz
-			AND end_time <= @end_time::timestamptz
-			AND CASE WHEN COALESCE(array_length(@template_ids::uuid[], 1), 0) > 0 THEN template_id = ANY(@template_ids::uuid[]) ELSE TRUE END
+			stats
 	)
 
 SELECT
 	COALESCE((SELECT template_ids FROM templates), '{}')::uuid[] AS template_ids, -- Includes app usage.
-	COALESCE((SELECT ssh_template_ids FROM templates), '{}')::uuid[] AS ssh_template_ids,
-	COALESCE((SELECT sftp_template_ids FROM templates), '{}')::uuid[] AS sftp_template_ids,
-	COALESCE((SELECT reconnecting_pty_template_ids FROM templates), '{}')::uuid[] AS reconnecting_pty_template_ids,
-	COALESCE((SELECT vscode_template_ids FROM templates), '{}')::uuid[] AS vscode_template_ids,
-	COALESCE((SELECT jetbrains_template_ids FROM templates), '{}')::uuid[] AS jetbrains_template_ids,
 	COALESCE(COUNT(DISTINCT user_id), 0)::bigint AS active_users, -- Includes app usage.
 	COALESCE(SUM(usage_mins) * 60, 0)::bigint AS usage_total_seconds, -- Includes app usage.
-	COALESCE(SUM(ssh_mins) * 60, 0)::bigint AS usage_ssh_seconds,
-	COALESCE(SUM(sftp_mins) * 60, 0)::bigint AS usage_sftp_seconds,
-	COALESCE(SUM(reconnecting_pty_mins) * 60, 0)::bigint AS usage_reconnecting_pty_seconds,
-	COALESCE(SUM(vscode_mins) * 60, 0)::bigint AS usage_vscode_seconds,
-	COALESCE(SUM(jetbrains_mins) * 60, 0)::bigint AS usage_jetbrains_seconds
+	-- Family name to usage seconds, and family name to the templates that saw
+	-- the family.
+	COALESCE((SELECT jsonb_object_agg(family, usage_seconds) FROM family_usage), '{}'::jsonb)::jsonb AS session_family_usage_seconds,
+	COALESCE((SELECT jsonb_object_agg(family, template_ids) FROM family_templates), '{}'::jsonb)::jsonb AS session_family_template_ids
 FROM
 	insights;
 
@@ -148,72 +173,97 @@ FROM
 -- GetTemplateInsightsByTemplate is used for Prometheus metrics. Keep
 -- in sync with GetTemplateInsights and UpsertTemplateUsageStats.
 WITH
-	-- app_families maps each attributed family to its app names, so the
-	-- probes below stay one expression per family: adding a family needs a
-	-- new list in fams plus one probe here, because sqlc output columns are
-	-- static. fams turns the jsonb parameter into arrays once for the whole
-	-- query. These probes only ask whether any app of a family is present,
-	-- so the jsonb key-existence operator beats decomposing session_counts
-	-- per row (measured ~2.4x faster on a 1M row scan).
-	fams AS (
-		SELECT
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'ssh')) AS ssh,
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'reconnecting_pty')) AS reconnecting_pty,
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'vscode')) AS vscode,
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'jetbrains')) AS jetbrains
-	),
-	-- Deduplicate activity by template, user, and minute.
+	-- Deduplicate activity by template, user, and minute. Each row's session
+	-- counts are decomposed into the families their app names map to, and the
+	-- families are deduplicated within the minute so a minute with two apps
+	-- of one family counts once for that family. app_families maps app name to
+	-- family name; an app the registry does not know is attributed to
+	-- 'unknown' rather than dropped.
 	minute_activity AS (
 		SELECT
-			template_id,
-			user_id,
-			date_trunc('minute', created_at) AS minute,
-			BOOL_OR(session_counts ?| fams.ssh) AS ssh,
-			BOOL_OR(session_counts ?| fams.reconnecting_pty) AS reconnecting_pty,
-			BOOL_OR(session_counts ?| fams.vscode) AS vscode,
-			BOOL_OR(session_counts ?| fams.jetbrains) AS jetbrains,
-			BOOL_OR(connection_count > 0) AS has_connection
+			was.template_id,
+			was.user_id,
+			date_trunc('minute', was.created_at) AS minute,
+			array_agg(DISTINCT COALESCE(@app_families::jsonb ->> app_name, 'unknown')) AS families,
+			BOOL_OR(was.connection_count > 0) AS has_connection
 		FROM
-			workspace_agent_stats, fams
+			workspace_agent_stats AS was, jsonb_object_keys(was.session_counts) AS app_name
 		WHERE
-			created_at >= @start_time::timestamptz
-			AND created_at < @end_time::timestamptz
-			AND session_counts <> '{}'::jsonb
+			was.created_at >= @start_time::timestamptz
+			AND was.created_at < @end_time::timestamptz
+			AND was.session_counts <> '{}'::jsonb
 		GROUP BY
-			template_id, user_id, minute
+			was.template_id, was.user_id, minute
 	),
-	insights AS (
+	connected AS (
+		-- NOTE(mafredri): The agent stats are currently very unreliable, and
+		-- sometimes the connections are missing, even during active sessions.
+		-- Since we can't fully rely on this, we check for "any connection
+		-- within this bucket". A better solution here would be preferable.
 		SELECT
 			template_id,
 			user_id,
-			COUNT(*) FILTER (WHERE ssh) AS ssh_mins,
-			COUNT(*) FILTER (WHERE reconnecting_pty) AS reconnecting_pty_mins,
-			COUNT(*) FILTER (WHERE vscode) AS vscode_mins,
-			COUNT(*) FILTER (WHERE jetbrains) AS jetbrains_mins,
-			-- NOTE(mafredri): The agent stats are currently very unreliable, and
-			-- sometimes the connections are missing, even during active sessions.
-			-- Since we can't fully rely on this, we check for "any connection
-			-- within this bucket". A better solution here would be preferable.
 			BOOL_OR(has_connection) AS has_connection
 		FROM
 			minute_activity
 		GROUP BY
 			template_id, user_id
+	),
+	insights AS (
+		SELECT
+			ma.template_id,
+			ma.user_id,
+			family,
+			COUNT(*) AS usage_mins
+		FROM
+			minute_activity AS ma
+		JOIN
+			connected AS c
+		ON
+			c.template_id = ma.template_id
+			AND c.user_id = ma.user_id
+			AND c.has_connection,
+			unnest(ma.families) AS family
+		GROUP BY
+			ma.template_id, ma.user_id, family
+	),
+	family_usage AS (
+		SELECT
+			template_id,
+			jsonb_object_agg(family, usage_seconds) AS session_family_usage_seconds
+		FROM (
+			SELECT
+				template_id,
+				family,
+				(SUM(usage_mins) * 60)::bigint AS usage_seconds
+			FROM
+				insights
+			GROUP BY
+				template_id, family
+		) AS family_seconds
+		GROUP BY
+			template_id
+	),
+	active_users AS (
+		SELECT
+			template_id,
+			COUNT(DISTINCT user_id)::bigint AS active_users
+		FROM
+			insights
+		GROUP BY
+			template_id
 	)
 
 SELECT
-	template_id,
-	COUNT(DISTINCT user_id)::bigint AS active_users,
-	(SUM(vscode_mins) * 60)::bigint AS usage_vscode_seconds,
-	(SUM(jetbrains_mins) * 60)::bigint AS usage_jetbrains_seconds,
-	(SUM(reconnecting_pty_mins) * 60)::bigint AS usage_reconnecting_pty_seconds,
-	(SUM(ssh_mins) * 60)::bigint AS usage_ssh_seconds
+	au.template_id,
+	au.active_users,
+	COALESCE(fu.session_family_usage_seconds, '{}'::jsonb)::jsonb AS session_family_usage_seconds
 FROM
-	insights
-WHERE
-	has_connection
-GROUP BY
-	template_id;
+	active_users AS au
+LEFT JOIN
+	family_usage AS fu
+ON
+	fu.template_id = au.template_id;
 
 -- name: GetTemplateAppInsights :many
 -- GetTemplateAppInsights returns the aggregate usage of each app in a given
@@ -498,20 +548,6 @@ WHERE
 -- used to store the data, and the minutes are summed for each user and template
 -- combination. The result is stored in the template_usage_stats table.
 WITH
-	-- app_families maps each attributed family to its app names, so the
-	-- probes below stay one expression per family: adding a family needs a
-	-- new list in fams plus one probe here, because sqlc output columns are
-	-- static. fams turns the jsonb parameter into arrays once for the whole
-	-- query. These probes only ask whether any app of a family is present,
-	-- so the jsonb key-existence operator beats decomposing session_counts
-	-- per row (measured ~2.4x faster on a 1M row scan).
-	fams AS (
-		SELECT
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'ssh')) AS ssh,
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'reconnecting_pty')) AS reconnecting_pty,
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'vscode')) AS vscode,
-			ARRAY(SELECT jsonb_array_elements_text(@app_families::jsonb -> 'jetbrains')) AS jetbrains
-	),
 	latest_start AS (
 		SELECT
 			-- Truncate to hour so that we always look at even ranges of data.
@@ -590,17 +626,13 @@ WITH
 			user_id,
 			-- Store each unique minute bucket for later merge between datasets.
 			array_agg(DISTINCT date_trunc('minute', created_at)) AS minute_buckets,
-			COUNT(DISTINCT CASE WHEN session_counts ?| fams.ssh THEN date_trunc('minute', created_at) ELSE NULL END) AS ssh_mins,
-			COUNT(DISTINCT CASE WHEN session_counts ?| fams.reconnecting_pty THEN date_trunc('minute', created_at) ELSE NULL END) AS reconnecting_pty_mins,
-			COUNT(DISTINCT CASE WHEN session_counts ?| fams.vscode THEN date_trunc('minute', created_at) ELSE NULL END) AS vscode_mins,
-			COUNT(DISTINCT CASE WHEN session_counts ?| fams.jetbrains THEN date_trunc('minute', created_at) ELSE NULL END) AS jetbrains_mins,
 			-- NOTE(mafredri): The agent stats are currently very unreliable, and
 			-- sometimes the connections are missing, even during active sessions.
 			-- Since we can't fully rely on this, we check for "any connection
 			-- during this half-hour". A better solution here would be preferable.
 			MAX(connection_count) > 0 AS has_connection
 		FROM
-			workspace_agent_stats, fams
+			workspace_agent_stats
 		WHERE
 			-- created_at >= @start_time::timestamptz
 			-- AND created_at < @end_time::timestamptz
@@ -609,6 +641,89 @@ WITH
 			AND session_counts <> '{}'::jsonb
 		GROUP BY
 			time_bucket, template_id, user_id
+	),
+	app_family_registry AS (
+		-- The session count attribution registry, app name to family name.
+		SELECT
+			app,
+			family
+		FROM
+			jsonb_each_text(@app_families::jsonb) AS registry(app, family)
+	),
+	agent_stats_app_minutes AS (
+		-- One bit per minute of the half-hour bucket, per app name, instead of
+		-- a count: masks can be OR'd into a family below without counting a
+		-- minute twice when two apps of the same family were active in it.
+		-- Transient, only the minute counts derived from them are stored.
+		--
+		-- The keys are app names as reported. An agent that reports only the
+		-- fixed session counts reports family names here, so the per-app map
+		-- can hold a family aggregate under a family name. The family map is
+		-- unaffected: those names belong to the family they aggregate.
+		SELECT
+			date_trunc('hour', created_at) + trunc(date_part('minute', created_at) / 30) * 30 * '1 minute'::interval AS time_bucket,
+			template_id,
+			user_id,
+			app_name,
+			bit_or(1 << (date_part('minute', created_at)::int % 30)) AS minute_mask
+		FROM
+			workspace_agent_stats, jsonb_object_keys(session_counts) AS app_name
+		WHERE
+			created_at >= (SELECT t FROM latest_start)
+			AND created_at < NOW()
+			AND session_counts <> '{}'::jsonb
+		GROUP BY
+			time_bucket, template_id, user_id, app_name
+	),
+	agent_stats_session_masks AS (
+		-- One pass over the per-app masks emits both groupings: the app rows
+		-- keep each mask as it is, the family rows OR the masks of every app
+		-- in the family. An app name the registry does not know is attributed
+		-- to 'unknown' rather than dropped, so a newly reported app still
+		-- lands somewhere. GROUPING() marks which set a row came from, because
+		-- the app column is null in the family rows.
+		SELECT
+			time_bucket,
+			template_id,
+			user_id,
+			agent_stats_app_minutes.app_name,
+			COALESCE(app_family_registry.family, 'unknown') AS family,
+			GROUPING(agent_stats_app_minutes.app_name) AS family_group,
+			bit_or(minute_mask) AS minute_mask
+		FROM
+			agent_stats_app_minutes
+		LEFT JOIN
+			app_family_registry
+		ON
+			app_family_registry.app = agent_stats_app_minutes.app_name
+		GROUP BY GROUPING SETS (
+			(time_bucket, template_id, user_id, agent_stats_app_minutes.app_name),
+			(time_bucket, template_id, user_id, COALESCE(app_family_registry.family, 'unknown'))
+		)
+	),
+	agent_stats_session_usage AS (
+		-- Both maps count the minutes set in a mask. Postgres 13 has no
+		-- bit_count, so the set bits are counted by stripping the zeros out of
+		-- the mask's text form.
+		SELECT
+			masks.time_bucket,
+			masks.template_id,
+			masks.user_id,
+			jsonb_object_agg(masks.app_name, length(replace(masks.minute_mask::bit(30)::text, '0', ''))) FILTER (WHERE masks.family_group = 0) AS session_app_usage_mins,
+			jsonb_object_agg(masks.family, length(replace(masks.minute_mask::bit(30)::text, '0', ''))) FILTER (WHERE masks.family_group = 1) AS session_family_usage_mins
+		FROM
+			agent_stats_session_masks AS masks
+		JOIN
+			agent_stats_buckets AS buckets
+		ON
+			buckets.time_bucket = masks.time_bucket
+			AND buckets.template_id = masks.template_id
+			AND buckets.user_id = masks.user_id
+			-- The same gate the union below applies to agent stats, so a
+			-- bucket that only has app stats records no session usage.
+			AND buckets.has_connection
+		GROUP BY
+			masks.time_bucket, masks.template_id, masks.user_id
 	),
 	stats AS (
 		SELECT
@@ -619,11 +734,6 @@ WITH
 			-- Sum/distinct to handle zero/duplicate values due union and to unnest.
 			COUNT(DISTINCT minute_bucket) AS usage_mins,
 			array_agg(DISTINCT minute_bucket) AS minute_buckets,
-			SUM(DISTINCT stats.ssh_mins) AS ssh_mins,
-			SUM(DISTINCT stats.sftp_mins) AS sftp_mins,
-			SUM(DISTINCT stats.reconnecting_pty_mins) AS reconnecting_pty_mins,
-			SUM(DISTINCT stats.vscode_mins) AS vscode_mins,
-			SUM(DISTINCT stats.jetbrains_mins) AS jetbrains_mins,
 			-- This is what we unnested, re-nest as json.
 			jsonb_object_agg(stats.app_name, stats.app_minutes) FILTER (WHERE stats.app_name IS NOT NULL) AS app_usage_mins
 		FROM (
@@ -631,11 +741,6 @@ WITH
 				time_bucket,
 				template_id,
 				user_id,
-				0 AS ssh_mins,
-				0 AS sftp_mins,
-				0 AS reconnecting_pty_mins,
-				0 AS vscode_mins,
-				0 AS jetbrains_mins,
 				app_name,
 				app_minutes,
 				minute_buckets
@@ -648,12 +753,6 @@ WITH
 				time_bucket,
 				template_id,
 				user_id,
-				ssh_mins,
-				-- TODO(mafredri): Enable when we have the column.
-				0 AS sftp_mins,
-				reconnecting_pty_mins,
-				vscode_mins,
-				jetbrains_mins,
 				NULL AS app_name,
 				NULL AS app_minutes,
 				minute_buckets
@@ -709,12 +808,9 @@ INSERT INTO template_usage_stats AS tus (
 	user_id,
 	usage_mins,
 	median_latency_ms,
-	ssh_mins,
-	sftp_mins,
-	reconnecting_pty_mins,
-	vscode_mins,
-	jetbrains_mins,
-	app_usage_mins
+	app_usage_mins,
+	session_app_usage_mins,
+	session_family_usage_mins
 ) (
 	SELECT
 		stats.start_time,
@@ -723,12 +819,11 @@ INSERT INTO template_usage_stats AS tus (
 		stats.user_id,
 		stats.usage_mins,
 		latencies.median_latency_ms,
-		stats.ssh_mins,
-		stats.sftp_mins,
-		stats.reconnecting_pty_mins,
-		stats.vscode_mins,
-		stats.jetbrains_mins,
-		stats.app_usage_mins
+		stats.app_usage_mins,
+		-- A bucket built from app stats alone saw no sessions, which is
+		-- recorded as no session usage rather than as unknown.
+		COALESCE(session_usage.session_app_usage_mins, '{}'::jsonb),
+		COALESCE(session_usage.session_family_usage_mins, '{}'::jsonb)
 	FROM
 		stats
 	LEFT JOIN
@@ -738,6 +833,13 @@ INSERT INTO template_usage_stats AS tus (
 		latencies.start_time = stats.start_time
 		AND latencies.template_id = stats.template_id
 		AND latencies.user_id = stats.user_id
+	LEFT JOIN
+		agent_stats_session_usage AS session_usage
+	ON
+		-- The session usage group-by ensures there is at most one row.
+		session_usage.time_bucket = stats.start_time
+		AND session_usage.template_id = stats.template_id
+		AND session_usage.user_id = stats.user_id
 )
 ON CONFLICT
 	(start_time, template_id, user_id)
@@ -745,12 +847,9 @@ DO UPDATE
 SET
 	usage_mins = EXCLUDED.usage_mins,
 	median_latency_ms = EXCLUDED.median_latency_ms,
-	ssh_mins = EXCLUDED.ssh_mins,
-	sftp_mins = EXCLUDED.sftp_mins,
-	reconnecting_pty_mins = EXCLUDED.reconnecting_pty_mins,
-	vscode_mins = EXCLUDED.vscode_mins,
-	jetbrains_mins = EXCLUDED.jetbrains_mins,
-	app_usage_mins = EXCLUDED.app_usage_mins
+	app_usage_mins = EXCLUDED.app_usage_mins,
+	session_app_usage_mins = EXCLUDED.session_app_usage_mins,
+	session_family_usage_mins = EXCLUDED.session_family_usage_mins
 WHERE
 	(tus.*) IS DISTINCT FROM (EXCLUDED.*);
 

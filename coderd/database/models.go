@@ -6185,18 +6185,12 @@ type TemplateUsageStat struct {
 	MedianLatencyMs sql.NullFloat64 `db:"median_latency_ms" json:"median_latency_ms"`
 	// Total minutes the user has been using the template.
 	UsageMins int16 `db:"usage_mins" json:"usage_mins"`
-	// Total minutes the user has been using SSH.
-	SshMins int16 `db:"ssh_mins" json:"ssh_mins"`
-	// Total minutes the user has been using SFTP.
-	SftpMins int16 `db:"sftp_mins" json:"sftp_mins"`
-	// Total minutes the user has been using the reconnecting PTY.
-	ReconnectingPtyMins int16 `db:"reconnecting_pty_mins" json:"reconnecting_pty_mins"`
-	// Total minutes the user has been using VSCode.
-	VscodeMins int16 `db:"vscode_mins" json:"vscode_mins"`
-	// Total minutes the user has been using JetBrains.
-	JetbrainsMins int16 `db:"jetbrains_mins" json:"jetbrains_mins"`
 	// Object with app names as keys and total minutes used as values. Null means no app usage was recorded.
 	AppUsageMins StringMapOfInt `db:"app_usage_mins" json:"app_usage_mins"`
+	// Total minutes the user has been using each app, keyed by the canonical app name reported by the agent. Null means the row was rolled up before per-app session usage was recorded.
+	SessionAppUsageMins StringMapOfInt `db:"session_app_usage_mins" json:"session_app_usage_mins"`
+	// Total minutes the user has been using each app family, keyed by family name. Empty means no session usage was recorded.
+	SessionFamilyUsageMins StringMapOfInt `db:"session_family_usage_mins" json:"session_family_usage_mins"`
 }
 
 // Joins in the username + avatar url of the created by user.

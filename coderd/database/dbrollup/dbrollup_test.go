@@ -245,13 +245,14 @@ func TestRollupTemplateUsageStats(t *testing.T) {
 	stats[0].StartTime = stats[0].StartTime.UTC()
 
 	require.Equal(t, database.TemplateUsageStat{
-		TemplateID:          tpl.ID,
-		UserID:              user.ID,
-		StartTime:           wags1.CreatedAt,
-		EndTime:             wags1.CreatedAt.Add(30 * time.Minute),
-		MedianLatencyMs:     sql.NullFloat64{Float64: 1, Valid: true},
-		UsageMins:           3,
-		ReconnectingPtyMins: 2,
+		TemplateID:             tpl.ID,
+		UserID:                 user.ID,
+		StartTime:              wags1.CreatedAt,
+		EndTime:                wags1.CreatedAt.Add(30 * time.Minute),
+		MedianLatencyMs:        sql.NullFloat64{Float64: 1, Valid: true},
+		UsageMins:              3,
+		SessionAppUsageMins:    database.StringMapOfInt{"reconnecting_pty": 2},
+		SessionFamilyUsageMins: database.StringMapOfInt{"reconnecting_pty": 2},
 		AppUsageMins: database.StringMapOfInt{
 			app.Slug: 2,
 		},

@@ -2,7 +2,6 @@ package codersdk_test
 
 import (
 	"encoding/json"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -87,63 +86,48 @@ func TestAppNameFamily(t *testing.T) {
 	}
 }
 
-func TestAppNamesInFamily(t *testing.T) {
+// Family sets are derived from the one registry, so callers that need the app
+// names in a family do not need a second list.
+func TestRegistryFamilySets(t *testing.T) {
 	t.Parallel()
 
-	// Forks share the VS Code family, and the list is sorted.
-	vscode := codersdk.AppNamesInFamily(codersdk.AppFamilyVSCode)
+	registry := codersdk.SessionCountAppFamilies()
+	inFamily := func(want codersdk.AppFamilyName) []string {
+		var names []string
+		for appName, family := range registry {
+			if family == want {
+				names = append(names, appName)
+			}
+		}
+		slices.Sort(names)
+		return names
+	}
+
+	// Forks share the VS Code family.
+	vscode := inFamily(codersdk.AppFamilyVSCode)
 	require.Contains(t, vscode, "cursor")
 	require.Contains(t, vscode, "vscode")
-	require.True(t, slices.IsSorted(vscode))
 
 	// Zed speaks SSH, so it reports under the SSH family.
-	require.Equal(t, []string{"ssh", "zed"},
-		codersdk.AppNamesInFamily(codersdk.AppFamilySSH))
+	require.Equal(t, []string{"ssh", "zed"}, inFamily(codersdk.AppFamilySSH))
 
-	require.Empty(t, codersdk.AppNamesInFamily("no_such_family"))
-}
-
-// The SQL queries that report per-family session counts hardcode one probe
-// expression and one output column per family, because sqlc output columns
-// are static. This pins the Go registry to the families those queries know
-// about.
-//
-// When adding a family, update, in this order:
-//  1. attributedAppFamilies in appname.go.
-//  2. Every query that reports per-family session counts: the fams CTE list,
-//     the probe expression, and the output column, in
-//     coderd/database/queries/workspaceagentstats.sql and insights.sql.
-//  3. The Go readers of those columns, then this list.
-//
-// dbauthz validation rejects a registry that does not match
-// AttributedAppFamilies, so a family added to Go but not to SQL fails at
-// runtime too.
-func TestAttributedAppFamiliesMatchQueries(t *testing.T) {
-	t.Parallel()
-
-	require.Equal(t, []codersdk.AppFamilyName{
-		codersdk.AppFamilyVSCode,
-		codersdk.AppFamilyJetBrains,
-		codersdk.AppFamilySSH,
-		codersdk.AppFamilyReconnectingPTY,
-	}, codersdk.AttributedAppFamilies())
-
-	// The registry keys are what the queries index by name.
-	require.ElementsMatch(t, codersdk.AttributedAppFamilies(),
-		slices.Collect(maps.Keys(codersdk.SessionCountAppFamilies())),
-		"registry keys must match the attributed families")
+	require.Empty(t, inFamily("no_such_family"))
 }
 
 func TestSessionCountAppFamilies(t *testing.T) {
 	t.Parallel()
 
-	families := codersdk.SessionCountAppFamilies()
-	require.Len(t, families, 4, "every attributed family must be present")
-	require.Contains(t, families, codersdk.AppFamilyVSCode)
-	require.Contains(t, families, codersdk.AppFamilyJetBrains)
-	require.Contains(t, families, codersdk.AppFamilySSH)
-	require.Contains(t, families, codersdk.AppFamilyReconnectingPTY)
-	require.Equal(t, codersdk.AppNamesInFamily(codersdk.AppFamilyVSCode), families[codersdk.AppFamilyVSCode])
+	registry := codersdk.SessionCountAppFamilies()
+	require.NotEmpty(t, registry)
+	for appName, family := range registry {
+		require.Equal(t, family, codersdk.AppNameFamily(appName),
+			"registry entry %q must agree with lookup", appName)
+	}
+
+	// The registry is a copy, so a caller cannot corrupt attribution.
+	registry["cursor"] = codersdk.AppFamilySSH
+	require.Equal(t, codersdk.AppFamilyVSCode, codersdk.AppNameFamily("cursor"))
+	require.Equal(t, codersdk.AppFamilyVSCode, codersdk.SessionCountAppFamilies()["cursor"])
 }
 
 func TestSessionCountAppFamiliesJSON(t *testing.T) {
@@ -152,7 +136,135 @@ func TestSessionCountAppFamiliesJSON(t *testing.T) {
 	raw := codersdk.SessionCountAppFamiliesJSON()
 	require.NotEmpty(t, raw)
 
-	var decoded map[codersdk.AppFamilyName][]string
+	// The minute aggregation queries decompose this with jsonb_each_text, so
+	// it must be a flat object of app name to family name.
+	var decoded map[string]codersdk.AppFamilyName
 	require.NoError(t, json.Unmarshal(raw, &decoded), "registry must marshal to a valid jsonb object")
 	require.Equal(t, codersdk.SessionCountAppFamilies(), decoded)
+}
+
+func TestSessionCountsByFamily(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		appCounts map[string]int64
+		want      map[codersdk.AppFamilyName]int64
+	}{
+		{
+			name:      "Empty",
+			appCounts: map[string]int64{},
+			want:      map[codersdk.AppFamilyName]int64{},
+		},
+		{
+			name:      "Nil",
+			appCounts: nil,
+			want:      map[codersdk.AppFamilyName]int64{},
+		},
+		{
+			name:      "SingleApp",
+			appCounts: map[string]int64{"jetbrains": 3},
+			want:      map[codersdk.AppFamilyName]int64{codersdk.AppFamilyJetBrains: 3},
+		},
+		{
+			// Simultaneous forks are additive within their family.
+			name:      "OverlappingAppsInOneFamily",
+			appCounts: map[string]int64{"vscode": 1, "cursor": 2, "windsurf": 4},
+			want:      map[codersdk.AppFamilyName]int64{codersdk.AppFamilyVSCode: 7},
+		},
+		{
+			name:      "UnregisteredAppIsUnknown",
+			appCounts: map[string]int64{"some_future_ide": 5, "ssh": 1},
+			want: map[codersdk.AppFamilyName]int64{
+				codersdk.AppFamilyUnknown: 5,
+				codersdk.AppFamilySSH:     1,
+			},
+		},
+		{
+			// Storage normalizes app names, but folding must not depend on it.
+			name:      "DenormalizedNamesFold",
+			appCounts: map[string]int64{"VSCode-Insiders": 2, "vscode_insiders": 1},
+			want:      map[codersdk.AppFamilyName]int64{codersdk.AppFamilyVSCode: 3},
+		},
+		{
+			name:      "AllFamilies",
+			appCounts: map[string]int64{"vscode": 1, "jetbrains": 2, "zed": 3, "reconnecting_pty": 4, "": 5},
+			want: map[codersdk.AppFamilyName]int64{
+				codersdk.AppFamilyVSCode:          1,
+				codersdk.AppFamilyJetBrains:       2,
+				codersdk.AppFamilySSH:             3,
+				codersdk.AppFamilyReconnectingPTY: 4,
+				codersdk.AppFamilyUnknown:         5,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, codersdk.SessionCountsByFamily(tc.appCounts))
+		})
+	}
+}
+
+// A family is registered by adding app names alone, with no SQL, column, or
+// second list to update.
+func TestSessionCountsByFamilyCoversEveryRegisteredFamily(t *testing.T) {
+	t.Parallel()
+
+	appCounts := map[string]int64{}
+	want := map[codersdk.AppFamilyName]int64{}
+	for appName, family := range codersdk.SessionCountAppFamilies() {
+		appCounts[appName] = 1
+		want[family]++
+	}
+	require.Equal(t, want, codersdk.SessionCountsByFamily(appCounts))
+}
+
+func TestSessionCountsByFamilyJSON(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		appCounts json.RawMessage
+		want      map[codersdk.AppFamilyName]int64
+	}{
+		{"Counts", json.RawMessage(`{"cursor":2,"vscode":1,"ssh":4}`), map[codersdk.AppFamilyName]int64{
+			codersdk.AppFamilyVSCode: 3,
+			codersdk.AppFamilySSH:    4,
+		}},
+		{"UnknownApp", json.RawMessage(`{"some_future_ide":9}`), map[codersdk.AppFamilyName]int64{
+			codersdk.AppFamilyUnknown: 9,
+		}},
+		{"EmptyObject", json.RawMessage(`{}`), map[codersdk.AppFamilyName]int64{}},
+		// A query with no matching rows aggregates to SQL NULL, which is not
+		// an error, just no sessions.
+		{"JSONNull", json.RawMessage(`null`), map[codersdk.AppFamilyName]int64{}},
+		{"Absent", nil, map[codersdk.AppFamilyName]int64{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := codersdk.SessionCountsByFamilyJSON(tc.appCounts)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSessionCountsByFamilyJSONMalformed(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		appCounts json.RawMessage
+	}{
+		{"Truncated", json.RawMessage(`{"vscode":`)},
+		{"NotAnObject", json.RawMessage(`["vscode"]`)},
+		{"NonNumericCount", json.RawMessage(`{"vscode":"1"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := codersdk.SessionCountsByFamilyJSON(tc.appCounts)
+			require.Error(t, err)
+			require.Nil(t, got)
+		})
+	}
 }

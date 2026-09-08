@@ -3328,12 +3328,9 @@ CREATE TABLE template_usage_stats (
     user_id uuid NOT NULL,
     median_latency_ms real,
     usage_mins smallint NOT NULL,
-    ssh_mins smallint NOT NULL,
-    sftp_mins smallint NOT NULL,
-    reconnecting_pty_mins smallint NOT NULL,
-    vscode_mins smallint NOT NULL,
-    jetbrains_mins smallint NOT NULL,
-    app_usage_mins jsonb
+    app_usage_mins jsonb,
+    session_app_usage_mins jsonb,
+    session_family_usage_mins jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 COMMENT ON TABLE template_usage_stats IS 'Records aggregated usage statistics for templates/users. All usage is rounded up to the nearest minute.';
@@ -3350,17 +3347,11 @@ COMMENT ON COLUMN template_usage_stats.median_latency_ms IS 'Median latency the 
 
 COMMENT ON COLUMN template_usage_stats.usage_mins IS 'Total minutes the user has been using the template.';
 
-COMMENT ON COLUMN template_usage_stats.ssh_mins IS 'Total minutes the user has been using SSH.';
-
-COMMENT ON COLUMN template_usage_stats.sftp_mins IS 'Total minutes the user has been using SFTP.';
-
-COMMENT ON COLUMN template_usage_stats.reconnecting_pty_mins IS 'Total minutes the user has been using the reconnecting PTY.';
-
-COMMENT ON COLUMN template_usage_stats.vscode_mins IS 'Total minutes the user has been using VSCode.';
-
-COMMENT ON COLUMN template_usage_stats.jetbrains_mins IS 'Total minutes the user has been using JetBrains.';
-
 COMMENT ON COLUMN template_usage_stats.app_usage_mins IS 'Object with app names as keys and total minutes used as values. Null means no app usage was recorded.';
+
+COMMENT ON COLUMN template_usage_stats.session_app_usage_mins IS 'Total minutes the user has been using each app, keyed by the app name the agent reported. Agents that report only the fixed session counts, and history converted by migration 000590, report family names in this position, so a key can be a family aggregate rather than a distinct app. Null means the row was rolled up before the column existed.';
+
+COMMENT ON COLUMN template_usage_stats.session_family_usage_mins IS 'Total minutes the user has been using each app family, keyed by family name. Empty means no session usage was recorded.';
 
 CREATE TABLE template_version_parameters (
     template_version_id uuid NOT NULL,
