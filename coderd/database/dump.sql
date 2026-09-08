@@ -333,10 +333,7 @@ CREATE TYPE build_reason AS ENUM (
     'cli',
     'ssh_connection',
     'vscode_connection',
-    'jetbrains_connection',
-    'task_auto_pause',
-    'task_manual_pause',
-    'task_resume'
+    'jetbrains_connection'
 );
 
 CREATE TYPE chat_client_type AS ENUM (
@@ -3188,7 +3185,6 @@ CREATE TABLE workspace_builds (
     daily_cost integer DEFAULT 0 NOT NULL,
     max_deadline timestamp with time zone DEFAULT '0001-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
     template_version_preset_id uuid,
-    has_ai_task boolean,
     has_external_agent boolean,
     notified_autostop_deadline timestamp with time zone DEFAULT '0001-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
     CONSTRAINT workspace_builds_deadline_below_max_deadline CHECK ((((deadline <> '0001-01-01 00:00:00+00'::timestamp with time zone) AND (deadline <= max_deadline)) OR (max_deadline = '0001-01-01 00:00:00+00'::timestamp with time zone)))
@@ -3499,7 +3495,6 @@ CREATE TABLE template_versions (
     message character varying(1048576) DEFAULT ''::character varying NOT NULL,
     archived boolean DEFAULT false NOT NULL,
     source_example_id text,
-    has_ai_task boolean,
     has_external_agent boolean
 );
 
@@ -3521,7 +3516,6 @@ CREATE VIEW template_version_with_user AS
     template_versions.message,
     template_versions.archived,
     template_versions.source_example_id,
-    template_versions.has_ai_task,
     template_versions.has_external_agent,
     COALESCE(visible_users.avatar_url, ''::text) AS created_by_avatar_url,
     COALESCE(visible_users.username, ''::text) AS created_by_username,
@@ -4131,7 +4125,6 @@ CREATE VIEW workspace_build_with_user AS
     workspace_builds.daily_cost,
     workspace_builds.max_deadline,
     workspace_builds.template_version_preset_id,
-    workspace_builds.has_ai_task,
     workspace_builds.has_external_agent,
     workspace_builds.notified_autostop_deadline,
     COALESCE(visible_users.avatar_url, ''::text) AS initiator_by_avatar_url,
@@ -5016,8 +5009,6 @@ CREATE INDEX idx_tailnet_tunnels_src_id ON tailnet_tunnels USING hash (src_id);
 CREATE INDEX idx_telemetry_locks_period_ending_at ON telemetry_locks USING btree (period_ending_at);
 
 CREATE UNIQUE INDEX idx_template_version_presets_default ON template_version_presets USING btree (template_version_id) WHERE (is_default = true);
-
-CREATE INDEX idx_template_versions_has_ai_task ON template_versions USING btree (has_ai_task);
 
 CREATE UNIQUE INDEX idx_unique_preset_name ON template_version_presets USING btree (name, template_version_id);
 
