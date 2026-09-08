@@ -471,11 +471,6 @@ const (
 	ApiKeyScopeWorkspaceAgentResourceMonitor       APIKeyScope = "workspace_agent_resource_monitor:*"
 	ApiKeyScopeWorkspaceDormant                    APIKeyScope = "workspace_dormant:*"
 	ApiKeyScopeWorkspaceProxy                      APIKeyScope = "workspace_proxy:*"
-	ApiKeyScopeTaskCreate                          APIKeyScope = "task:create"
-	ApiKeyScopeTaskRead                            APIKeyScope = "task:read"
-	ApiKeyScopeTaskUpdate                          APIKeyScope = "task:update"
-	ApiKeyScopeTaskDelete                          APIKeyScope = "task:delete"
-	ApiKeyScopeTask                                APIKeyScope = "task:*"
 	ApiKeyScopeWorkspaceShare                      APIKeyScope = "workspace:share"
 	ApiKeyScopeWorkspaceDormantShare               APIKeyScope = "workspace_dormant:share"
 	ApiKeyScopeBoundaryUsage                       APIKeyScope = "boundary_usage:*"
@@ -758,11 +753,6 @@ func (e APIKeyScope) Valid() bool {
 		ApiKeyScopeWorkspaceAgentResourceMonitor,
 		ApiKeyScopeWorkspaceDormant,
 		ApiKeyScopeWorkspaceProxy,
-		ApiKeyScopeTaskCreate,
-		ApiKeyScopeTaskRead,
-		ApiKeyScopeTaskUpdate,
-		ApiKeyScopeTaskDelete,
-		ApiKeyScopeTask,
 		ApiKeyScopeWorkspaceShare,
 		ApiKeyScopeWorkspaceDormantShare,
 		ApiKeyScopeBoundaryUsage,
@@ -1013,11 +1003,6 @@ func AllAPIKeyScopeValues() []APIKeyScope {
 		ApiKeyScopeWorkspaceAgentResourceMonitor,
 		ApiKeyScopeWorkspaceDormant,
 		ApiKeyScopeWorkspaceProxy,
-		ApiKeyScopeTaskCreate,
-		ApiKeyScopeTaskRead,
-		ApiKeyScopeTaskUpdate,
-		ApiKeyScopeTaskDelete,
-		ApiKeyScopeTask,
 		ApiKeyScopeWorkspaceShare,
 		ApiKeyScopeWorkspaceDormantShare,
 		ApiKeyScopeBoundaryUsage,
