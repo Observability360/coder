@@ -13501,7 +13501,7 @@ func TestUpsertAISeats(t *testing.T) {
 	newRow, err := db.UpsertAISeatState(ctx, database.UpsertAISeatStateParams{
 		UserID:        user.ID,
 		FirstUsedAt:   now.Add(time.Hour * -24),
-		LastEventType: database.AISeatUsageReasonTask,
+		LastEventType: database.AISeatUsageReasonAibridge,
 	})
 	require.NoError(t, err)
 	require.True(t, newRow)
@@ -13509,7 +13509,7 @@ func TestUpsertAISeats(t *testing.T) {
 	alreadyExists, err := db.UpsertAISeatState(ctx, database.UpsertAISeatStateParams{
 		UserID:        user.ID,
 		FirstUsedAt:   now.Add(time.Hour * -23),
-		LastEventType: database.AISeatUsageReasonTask,
+		LastEventType: database.AISeatUsageReasonAibridge,
 	})
 	require.NoError(t, err)
 	require.False(t, alreadyExists)
@@ -13517,7 +13517,7 @@ func TestUpsertAISeats(t *testing.T) {
 	alreadyExists, err = db.UpsertAISeatState(ctx, database.UpsertAISeatStateParams{
 		UserID:        user.ID,
 		FirstUsedAt:   now,
-		LastEventType: database.AISeatUsageReasonTask,
+		LastEventType: database.AISeatUsageReasonAibridge,
 	})
 	require.NoError(t, err)
 	require.False(t, alreadyExists)
