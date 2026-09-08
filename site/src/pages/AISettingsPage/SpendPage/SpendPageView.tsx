@@ -96,14 +96,12 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 	}
 
 	const displayDateRange = toInclusiveDateRange(dateRange);
-	const filters = (
-		<SpendFilters
-			menus={filterMenus}
-			now={now}
-			dateRange={displayDateRange}
-			onDateRangeChange={onDateRangeChange}
-		/>
-	);
+	const filterProps = {
+		menus: filterMenus,
+		now,
+		dateRange: displayDateRange,
+		onDateRangeChange,
+	};
 
 	if (drillInUserId) {
 		return (
@@ -113,7 +111,7 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 				error={drillInUserError}
 				onRetry={onDrillInUserRetry}
 				onBack={onClearSelectedUser}
-				filters={filters}
+				filters={<SpendFilters {...filterProps} />}
 				dimensions={dimensions}
 				queryDateRange={dateRange}
 				summaryData={summaryData}
@@ -126,20 +124,25 @@ export const SpendPageView: FC<SpendPageViewProps> = ({
 
 	return (
 		<div className="flex max-w-[1100px] flex-col gap-8">
-			<SettingsHeader>
-				<SettingsHeaderTitle>AI spend</SettingsHeaderTitle>
-				<SettingsHeaderDescription>
-					Monitor AI Gateway spend across your deployment.
-				</SettingsHeaderDescription>
-			</SettingsHeader>
-
-			{filters}
-			<SpendUsersTable
-				displayDateRange={displayDateRange}
-				searchFilter={searchFilter}
-				onSearchFilterChange={onSearchFilterChange}
-				usersQuery={usersQuery}
-			/>
+			<div>
+				<SettingsHeader>
+					<SettingsHeaderTitle>AI spend</SettingsHeaderTitle>
+					<SettingsHeaderDescription>
+						Monitor AI Gateway spend across your deployment.
+					</SettingsHeaderDescription>
+				</SettingsHeader>
+				<div className="flex flex-col gap-4">
+					<SpendFilters
+						{...filterProps}
+						search={{ value: searchFilter, onChange: onSearchFilterChange }}
+					/>
+					<SpendUsersTable
+						displayDateRange={displayDateRange}
+						searchFilter={searchFilter}
+						usersQuery={usersQuery}
+					/>
+				</div>
+			</div>
 			<section className="space-y-6">
 				<SpendSectionHeader
 					title="Deployment spend"

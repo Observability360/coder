@@ -12,7 +12,6 @@ import { AvatarData } from "#/components/Avatar/AvatarData";
 import { Button } from "#/components/Button/Button";
 import type { DateRangeValue } from "#/components/DateRangePicker/DateRangePicker";
 import { PaginationContainer } from "#/components/PaginationWidget/PaginationContainer";
-import { SearchField } from "#/components/SearchField/SearchField";
 import { Spinner } from "#/components/Spinner/Spinner";
 import {
 	Table,
@@ -26,7 +25,6 @@ import { formatTokenCount } from "#/utils/analytics";
 import type { SpendUsersQuery } from "../SpendPageView";
 import { CostCell } from "./CostCell";
 import { RetentionNotice } from "./RetentionNotice";
-import { SpendSectionHeader } from "./SpendSectionHeader";
 
 export const userSearchParam = "user";
 
@@ -70,14 +68,12 @@ export const spendListSearchFromState = (state: unknown): string | null =>
 interface SpendUsersTableProps {
 	displayDateRange: DateRangeValue;
 	searchFilter: string;
-	onSearchFilterChange: (value: string) => void;
 	usersQuery: SpendUsersQuery;
 }
 
 export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 	displayDateRange,
 	searchFilter,
-	onSearchFilterChange,
 	usersQuery,
 }) => {
 	const [searchParams, setSearchParams] = useSearchParams();
@@ -121,19 +117,7 @@ export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 	);
 
 	return (
-		<section className="space-y-6">
-			<SpendSectionHeader
-				title="Spend by user"
-				description="AI Gateway cost and usage for each user in the selected period and filters."
-			/>
-			<div className="w-full md:max-w-sm">
-				<SearchField
-					value={searchFilter}
-					onChange={onSearchFilterChange}
-					placeholder="Search by name or username"
-					aria-label="Search spend by name or username"
-				/>
-			</div>
+		<div className="space-y-6">
 			{usersQuery.isLoading && (
 				<div
 					role="status"
@@ -235,7 +219,7 @@ export const SpendUsersTable: FC<SpendUsersTableProps> = ({
 					</div>
 				</>
 			)}
-		</section>
+		</div>
 	);
 };
 
