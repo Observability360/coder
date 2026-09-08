@@ -159,6 +159,35 @@ export const FilterByProvider: Story = {
 	},
 };
 
+// The provider filter is read from the URL so it survives navigating to a
+// model and back. Mounting with `?provider=` already set proves the URL is
+// the source of truth: a regression back to local component state would show
+// all models here instead of the filtered subset.
+export const PersistsProviderFilterFromUrl: Story = {
+	parameters: {
+		reactRouter: reactRouterParameters({
+			location: {
+				path: "/ai/settings/models",
+				searchParams: { provider: "prov-anthropic" },
+			},
+			routing: [
+				{ path: "/ai/settings/models", useStoryElement: true },
+				{ path: "/ai/settings/models/add", useStoryElement: true },
+				{ path: "/ai/settings/models/:modelId", useStoryElement: true },
+			],
+		}),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		await expect(
+			canvas.getByRole("combobox", { name: /filter by provider/i }),
+		).toHaveTextContent("Anthropic");
+		await expect(canvas.getByText("Claude Sonnet 4.5")).toBeInTheDocument();
+		await expect(canvas.queryByText("GPT-5")).not.toBeInTheDocument();
+		await expect(canvas.queryByText("GPT-4o mini")).not.toBeInTheDocument();
+	},
+};
+
 export const NoMatchingModels: Story = {
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
