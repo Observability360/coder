@@ -150,7 +150,13 @@ func TestPostAudioTranscription_Success(t *testing.T) {
 	assert.Equal(t, audioBytes, gotFileBytes)
 	assert.Equal(t, "whisper-1", gotModel)
 	assert.Equal(t, "pt", gotLanguage)
-	_ = gotContentType
+	// Regression guard: multipart.Writer.CreateFormFile hardcodes
+	// application/octet-stream for the file part regardless of the real
+	// audio format, which every Content-Type-validating upstream (e.g.
+	// Azure Speech via OmniRoute) then rejects outright. This assertion was
+	// previously a no-op (`_ = gotContentType`) — gotContentType was
+	// captured but never checked, which is exactly how the bug shipped.
+	assert.Equal(t, "audio/webm;codecs=opus", gotContentType)
 }
 
 func readAllPart(p *multipart.Part) ([]byte, error) {
