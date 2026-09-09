@@ -761,4 +761,52 @@ describe("api.ts", () => {
 			);
 		});
 	});
+
+	describe("transcribeAudio", () => {
+		it("posts the raw blob through the shared axios instance (the same one every other authenticated mutation uses, which carries X-CSRF-TOKEN)", async () => {
+			// The whole point of this method existing (instead of a raw
+			// fetch()) is that it goes through `this.axios` — the one shared
+			// instance getConfiguredAxiosInstance() attaches X-CSRF-TOKEN to,
+			// and that every other method in this file (login, above; every
+			// other authenticated mutation) already relies on for that same
+			// header. A raw fetch() bypasses this instance entirely and does
+			// not carry the token — confirmed as the actual production
+			// failure this method fixes (Coder's CSRF middleware rejected the
+			// browser's cookie-authenticated upload before it reached
+			// coderd's handler). This test proves transcribeAudio reaches
+			// `axiosInstance.post`, not a competing HTTP client.
+			vi.spyOn(axiosInstance, "post").mockResolvedValueOnce({
+				data: { text: "reduza a cardinalidade das métricas" },
+			});
+
+			const blob = new Blob(["fake-audio-bytes"], {
+				type: "audio/webm;codecs=opus",
+			});
+			const result = await API.transcribeAudio(blob);
+
+			expect(axiosInstance.post).toHaveBeenCalledWith(
+				"/api/v2/audio-transcriptions",
+				blob,
+				{ headers: { "Content-Type": "audio/webm;codecs=opus" } },
+			);
+			// The body passed to axios must remain the raw Blob itself — never
+			// re-encoded to JSON or multipart/form-data at this layer.
+			expect(axiosInstance.post).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.any(Blob),
+				expect.anything(),
+			);
+			expect(result).toStrictEqual({
+				text: "reduza a cardinalidade das métricas",
+			});
+		});
+
+		it("propagates errors from the upstream transcription request", async () => {
+			const expectedError = new Error("request failed");
+			vi.spyOn(axiosInstance, "post").mockRejectedValueOnce(expectedError);
+
+			const blob = new Blob(["fake-audio-bytes"], { type: "audio/mpeg" });
+			await expect(API.transcribeAudio(blob)).rejects.toBe(expectedError);
+		});
+	});
 });

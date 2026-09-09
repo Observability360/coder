@@ -2598,6 +2598,30 @@ class ApiMethods {
 		return response.data;
 	};
 
+	// Reuses the same shared axios instance every other mutation goes
+	// through (see getConfiguredAxiosInstance above), so X-CSRF-TOKEN is
+	// attached automatically exactly like every other authenticated
+	// POST/PUT/PATCH/DELETE in this file — a raw fetch() bypasses that
+	// entirely, which is what caused the browser (cookie-authenticated)
+	// path to be rejected by Coder's CSRF middleware before ever reaching
+	// coderd's audio-transcription handler. Modeled directly on
+	// uploadFile's raw-body-upload shape immediately above: axios sends a
+	// Blob/File body as-is (never JSON- or multipart-encoded).
+	//
+	// Not codersdk.AudioTranscriptionResponse from typesGenerated.ts: that
+	// type doesn't exist there yet (the Go type was added without a
+	// regenerate-types pass). Declared inline here rather than pulling in
+	// an unrelated full regeneration of the generated types file.
+	transcribeAudio = async (blob: Blob): Promise<{ text: string }> => {
+		const response = await this.axios.post<{ text: string }>(
+			"/api/v2/audio-transcriptions",
+			blob,
+			{ headers: { "Content-Type": blob.type } },
+		);
+
+		return response.data;
+	};
+
 	getTemplateVersionLogs = async (
 		versionId: string,
 	): Promise<TypesGen.ProvisionerJobLog[]> => {
