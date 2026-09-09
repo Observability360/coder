@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -44,6 +45,11 @@ func audioExtensionForContentType(contentType string) string {
 	}
 	return ".bin"
 }
+
+// multipartQuoteEscaper mirrors the unexported escapeQuotes helper
+// mime/multipart's own CreateFormFile uses to build Content-Disposition
+// header values safely.
+var multipartQuoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
 
 // @Summary Transcribe audio
 // @Description Proxies a recorded audio clip to the deployment's configured
@@ -190,7 +196,18 @@ func buildTranscriptionUpstreamBody(
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 
-	part, err := mw.CreateFormFile("file", "recording"+audioExtensionForContentType(contentType))
+	// multipart.Writer.CreateFormFile hardcodes the part's Content-Type to
+	// application/octet-stream (Go stdlib behavior, mime/multipart/writer.go)
+	// regardless of the real audio format. Upstream transcription providers
+	// that validate the part's Content-Type (e.g. Azure Speech, reached via
+	// OmniRoute) then reject every request outright. Build the part header
+	// manually instead, carrying through the real incoming Content-Type.
+	filename := "recording" + audioExtensionForContentType(contentType)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="file"; filename="%s"`, multipartQuoteEscaper.Replace(filename)))
+	header.Set("Content-Type", contentType)
+	part, err := mw.CreatePart(header)
 	if err != nil {
 		return nil, "", fmt.Errorf("create form file: %w", err)
 	}
