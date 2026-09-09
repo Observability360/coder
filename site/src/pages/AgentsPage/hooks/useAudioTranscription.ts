@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { API } from "#/api/api";
 
 /**
  * Replaces useSpeechRecognition (browser Web Speech API) with a
@@ -17,9 +18,17 @@ import { useCallback, useRef, useState } from "react";
  * is `isTranscribing`, the wait between "stop pressed" and "transcript
  * received" that Web Speech never had (it had no such gap: interim results
  * were already live).
+ *
+ * Uploads via API.transcribeAudio (site/src/api/api.ts), not a raw
+ * fetch() — every authenticated mutation in this app goes through the one
+ * shared axios instance there, which has X-CSRF-TOKEN attached
+ * automatically. A raw fetch() to this same endpoint bypasses that
+ * entirely and gets rejected by Coder's CSRF middleware before the request
+ * ever reaches coderd's audio-transcription handler (confirmed: this
+ * shipped broken in production for real cookie-authenticated browser
+ * sessions, even though header-token-authenticated server-side testing of
+ * the same endpoint never exercises CSRF at all and passed clean).
  */
-
-const AUDIO_TRANSCRIPTION_ENDPOINT = "/api/v2/audio-transcriptions";
 
 /** Preference order: opus in a webm container is what Chrome/Firefox/Edge
  *  produce and what most STT providers (including Whisper) parse natively.
@@ -112,14 +121,8 @@ export function useAudioTranscription(): {
 					chunksRef.current = [];
 
 					setIsTranscribing(true);
-					fetch(AUDIO_TRANSCRIPTION_ENDPOINT, {
-						method: "POST",
-						headers: { "Content-Type": blob.type },
-						body: blob,
-					})
-						.then(async (res) => {
-							if (!res.ok) throw new Error(`transcription failed: ${res.status}`);
-							const data = (await res.json()) as { text?: string };
+					API.transcribeAudio(blob)
+						.then((data) => {
 							if (cancelledRef.current) return;
 							setTranscript(data.text ?? "");
 						})

@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { API } from "#/api/api";
 import {
 	isAudioTranscriptionSupported,
 	useAudioTranscription,
@@ -70,10 +71,7 @@ function denyMicAccess() {
 	});
 }
 
-const originalFetch = globalThis.fetch;
-
 afterEach(() => {
-	globalThis.fetch = originalFetch;
 	vi.restoreAllMocks();
 });
 
@@ -104,12 +102,11 @@ describe("useAudioTranscription", () => {
 		});
 	});
 
-	it("stop() uploads the recording and populates transcript exactly once, going through isTranscribing", async () => {
+	it("stop() uploads the recording via API.transcribeAudio (the shared, CSRF-covered client) and populates transcript exactly once, going through isTranscribing", async () => {
 		installMocks();
-		globalThis.fetch = vi.fn().mockResolvedValue({
-			ok: true,
-			json: async () => ({ text: "reduza a cardinalidade das métricas" }),
-		});
+		const transcribeAudio = vi
+			.spyOn(API, "transcribeAudio")
+			.mockResolvedValue({ text: "reduza a cardinalidade das métricas" });
 
 		const { result } = renderHook(() => useAudioTranscription());
 		act(() => result.current.start());
@@ -124,17 +121,24 @@ describe("useAudioTranscription", () => {
 		expect(result.current.transcript).toBe(
 			"reduza a cardinalidade das métricas",
 		);
-		expect(globalThis.fetch).toHaveBeenCalledWith(
-			"/api/v2/audio-transcriptions",
-			expect.objectContaining({ method: "POST" }),
-		);
+		// Must go through API.transcribeAudio — not a raw fetch() — so the
+		// request carries X-CSRF-TOKEN via the same shared axios instance
+		// every other authenticated mutation uses. A raw fetch() bypasses
+		// that and gets rejected by Coder's CSRF middleware for real
+		// cookie-authenticated browser sessions.
+		expect(transcribeAudio).toHaveBeenCalledTimes(1);
+		const uploadedBlob = transcribeAudio.mock.calls[0][0];
+		expect(uploadedBlob).toBeInstanceOf(Blob);
+		// Content-Type must remain the real recorded audio MIME type — never
+		// converted to JSON or multipart at this layer.
+		expect(uploadedBlob.type).toBe("audio/webm;codecs=opus");
 		// The mic stream's tracks must be released once recording stops.
 		expect(mockTracks[0].stop).toHaveBeenCalled();
 	});
 
 	it("surfaces a transcription-failed error and does NOT silently fall back when the upload fails", async () => {
 		installMocks();
-		globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+		vi.spyOn(API, "transcribeAudio").mockRejectedValue(new Error("500"));
 
 		const { result } = renderHook(() => useAudioTranscription());
 		act(() => result.current.start());
@@ -160,7 +164,7 @@ describe("useAudioTranscription", () => {
 
 	it("cancel() discards the recording without ever sending a transcription request", async () => {
 		installMocks();
-		globalThis.fetch = vi.fn();
+		const transcribeAudio = vi.spyOn(API, "transcribeAudio");
 
 		const { result } = renderHook(() => useAudioTranscription());
 		act(() => result.current.start());
@@ -171,7 +175,7 @@ describe("useAudioTranscription", () => {
 		expect(result.current.isRecording).toBe(false);
 		expect(result.current.isTranscribing).toBe(false);
 		expect(result.current.transcript).toBe("");
-		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(transcribeAudio).not.toHaveBeenCalled();
 		expect(mockTracks[0].stop).toHaveBeenCalled();
 	});
 
