@@ -1,3 +1,4 @@
+import { isAxiosError } from "axios";
 import {
 	ArrowLeftIcon,
 	ArrowUpIcon,
@@ -21,11 +22,16 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { useMutation, useQueryClient } from "react-query";
+import { useMutation, useQuery, useQueryClient } from "react-query";
 import { Link } from "react-router";
 import { toast } from "sonner";
+import type { Repository } from "#/api/api";
 import { getErrorMessage } from "#/api/errors";
 import { disconnectMCPServerOAuth2 } from "#/api/queries/chats";
+import {
+	attachRepositoryWorkspace,
+	repositoryCatalog,
+} from "#/api/queries/repositoryCatalog";
 import type * as TypesGen from "#/api/typesGenerated";
 import type {
 	AgentChatSendShortcut,
@@ -60,10 +66,10 @@ import {
 import { cn } from "#/utils/cn";
 import { countInvisibleCharacters } from "#/utils/invisibleUnicode";
 import { isBelowMdViewport, isMobileViewport } from "#/utils/mobile";
+import { useAudioTranscription } from "../hooks/useAudioTranscription";
 import { chatWidthClass, useChatFullWidth } from "../hooks/useChatFullWidth";
 import { useMCPOAuthFlow } from "../hooks/useMCPOAuthFlow";
 import { useOverflowCount } from "../hooks/useOverflowCount";
-import { useAudioTranscription } from "../hooks/useAudioTranscription";
 import {
 	DEFAULT_AGENT_CHAT_SEND_SHORTCUT,
 	MODIFIER_AGENT_CHAT_SEND_SHORTCUT,
@@ -1256,7 +1262,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 											<span>Back</span>
 										</button>
 										<Separator className="my-1" />
-										<WorkspacePickerList
+										<RepositoryWorkspacePickerList
 											workspaceOptions={workspaceOptions}
 											selectedWorkspaceId={selectedWorkspaceId}
 											chatOrganizationId={chatOrganizationId}
@@ -1633,16 +1639,18 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 										Transcrevendo...
 									</span>
 								)}
-								{speech.error && !speech.isRecording && !speech.isTranscribing && (
-									<span
-										className="text-2xs text-content-destructive"
-										role="alert"
-									>
-										{speech.error === "not-allowed"
-											? "Mic access denied"
-											: "Transcription failed"}
-									</span>
-								)}
+								{speech.error &&
+									!speech.isRecording &&
+									!speech.isTranscribing && (
+										<span
+											className="text-2xs text-content-destructive"
+											role="alert"
+										>
+											{speech.error === "not-allowed"
+												? "Mic access denied"
+												: "Transcription failed"}
+										</span>
+									)}
 							</>
 						)}
 						{contextUsage !== undefined && (
@@ -1776,7 +1784,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
  * than the chat are disabled unless already selected, so stale bindings
  * can still be cleared.
  */
-interface WorkspacePickerListProps {
+export interface WorkspacePickerListProps {
 	workspaceOptions:
 		| ReadonlyArray<{
 				id: string;
@@ -1845,6 +1853,139 @@ const WorkspacePickerList: FC<WorkspacePickerListProps> = ({
 						}
 
 						return item;
+					})}
+				</CommandGroup>
+			</CommandList>
+		</Command>
+	);
+};
+
+/**
+ * Repository-driven "Attach workspace" picker (see WorkspacePickerList doc
+ * comment above for the shared component this wraps). Lists the deployment's
+ * configured GitHub organization repositories instead of raw workspace
+ * names — selecting a repository reuses the caller's existing workspace for
+ * it if one exists, or lazily creates one via POST
+ * /api/v2/repository-catalog/attach, then calls onSelect with the resulting
+ * workspace id exactly as the plain picker does. Falls back to the plain
+ * WorkspacePickerList, unchanged, when the deployment has not configured the
+ * repository catalog (GET .../repositories 404s) — this feature is
+ * additive, not a replacement, for deployments that have not opted in.
+ */
+export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
+	workspaceOptions,
+	selectedWorkspaceId,
+	chatOrganizationId,
+	onSelect,
+}) => {
+	const queryClient = useQueryClient();
+	// Enabled unconditionally: this component only mounts while the Attach
+	// Workspace menu is open, so the query itself is already "on demand."
+	const catalogQuery = useQuery(repositoryCatalog(true));
+	const attachMutation = useMutation(attachRepositoryWorkspace(queryClient));
+	const [attachingRepoId, setAttachingRepoId] = useState<number | null>(null);
+
+	const notConfigured =
+		isAxiosError(catalogQuery.error) &&
+		catalogQuery.error.response?.status === 404;
+	if (notConfigured) {
+		return (
+			<WorkspacePickerList
+				workspaceOptions={workspaceOptions}
+				selectedWorkspaceId={selectedWorkspaceId}
+				chatOrganizationId={chatOrganizationId}
+				onSelect={onSelect}
+			/>
+		);
+	}
+
+	if (catalogQuery.isLoading) {
+		return (
+			<div className="flex items-center justify-center p-4">
+				<Spinner loading />
+			</div>
+		);
+	}
+
+	if (catalogQuery.isError) {
+		return (
+			<div className="flex flex-col items-center gap-2 p-3 text-center text-xs text-content-secondary">
+				<span>Couldn't load repositories from GitHub.</span>
+				<Button
+					size="sm"
+					variant="outline"
+					onClick={() => catalogQuery.refetch()}
+				>
+					Retry
+				</Button>
+			</div>
+		);
+	}
+
+	const repositories = catalogQuery.data?.repositories ?? [];
+
+	const handleSelectRepository = async (repo: Repository) => {
+		if (repo.workspace_id) {
+			onSelect(repo.workspace_id);
+			return;
+		}
+		setAttachingRepoId(repo.id);
+		try {
+			const result = await attachMutation.mutateAsync({
+				owner: repo.owner,
+				repo: repo.name,
+			});
+			onSelect(result.workspace.id);
+		} catch (error) {
+			toast.error(
+				getErrorMessage(
+					error,
+					`Failed to create a workspace for ${repo.full_name}.`,
+				),
+			);
+		} finally {
+			setAttachingRepoId(null);
+		}
+	};
+
+	return (
+		<Command loop>
+			<CommandInput placeholder="Search repositories..." className="text-xs" />
+			<CommandList>
+				<CommandEmpty className="text-xs">No repositories found</CommandEmpty>
+				<CommandGroup>
+					{repositories.map((repo) => {
+						const isAttached = repo.workspace_id === selectedWorkspaceId;
+						const isAttaching = attachingRepoId === repo.id;
+						const statusLabel = isAttached
+							? "Attached"
+							: repo.workspace_id
+								? "Ready"
+								: "Not created";
+
+						return (
+							<CommandItem
+								className="text-xs font-normal"
+								key={repo.id}
+								value={repo.name}
+								disabled={isAttaching}
+								onSelect={() => {
+									void handleSelectRepository(repo);
+								}}
+							>
+								<span className="min-w-0 flex-1 truncate">{repo.name}</span>
+								{isAttaching ? (
+									<Spinner loading className="size-3 shrink-0" />
+								) : (
+									<span className="shrink-0 text-content-secondary">
+										{statusLabel}
+									</span>
+								)}
+								{isAttached && (
+									<CheckIcon className="ml-auto size-icon-sm shrink-0" />
+								)}
+							</CommandItem>
+						);
 					})}
 				</CommandGroup>
 			</CommandList>

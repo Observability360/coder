@@ -1496,6 +1496,13 @@ func New(options *Options) *API {
 			)
 			r.Post("/", api.postAudioTranscription)
 		})
+		r.Route("/repository-catalog", func(r chi.Router) {
+			r.Use(
+				apiKeyMiddleware,
+			)
+			r.Get("/repositories", api.repositoryCatalogRepositories)
+			r.Post("/attach", api.repositoryCatalogAttach)
+		})
 		r.Route("/external-auth", func(r chi.Router) {
 			r.Use(
 				apiKeyMiddleware,
@@ -2230,6 +2237,10 @@ type API struct {
 	// FilesRateLimit budget.
 	chatFilesRateLimitOnce sync.Once
 	chatFilesRateLimit     func(http.Handler) http.Handler
+
+	// repositoryCatalogCache caches GET /api/v2/repository-catalog/repositories
+	// for repositoryCatalogCacheTTL — see repositorycatalog.go.
+	repositoryCatalogCache repositoryCatalogCache
 
 	// DeploymentID is loaded from the database on startup.
 	DeploymentID string
