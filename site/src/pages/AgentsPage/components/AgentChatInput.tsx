@@ -1069,7 +1069,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		applyCycleValue(nextPrompt);
 	};
 
-	const sendButtonLabel = isEditingHistoryMessage ? "Save Edit" : "Send";
+	// A turn is already running (or interrupting): a submission here does not
+	// start immediately, it joins this chat's FIFO queue and is dispatched
+	// automatically once the current turn reaches a terminal state. This is
+	// purely a submit-time label/placeholder distinction — the send call
+	// itself, the queue, and its auto-dispatch are unchanged either way.
+	const isQueueingSubmission = isStreaming && !isEditingHistoryMessage;
+	const sendButtonLabel = isEditingHistoryMessage
+		? "Save Edit"
+		: isQueueingSubmission
+			? "Queue"
+			: "Send";
+	const effectivePlaceholder = isQueueingSubmission
+		? "Queue for after this turn..."
+		: placeholder;
 	const sendShortcutLabel =
 		sendShortcut === MODIFIER_AGENT_CHAT_SEND_SHORTCUT
 			? "Cmd/Ctrl+Enter"
@@ -1171,7 +1184,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 					onPaste={resetPromptCycle}
 					aria-label="Chat message"
 					className="min-h-[60px] sm:min-h-24 w-full resize-none bg-transparent px-3 py-2 font-sans text-[13px] leading-relaxed text-content-primary placeholder:text-content-secondary disabled:cursor-not-allowed disabled:opacity-70"
-					placeholder={placeholder}
+					placeholder={effectivePlaceholder}
 					initialValue={initialValue}
 					initialEditorState={initialEditorState}
 					remountKey={remountKey}
@@ -1344,7 +1357,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 														sideOffset={8}
 														className="w-64 p-0"
 													>
-														<WorkspacePickerList
+														<RepositoryWorkspacePickerList
 															workspaceOptions={workspaceOptions}
 															selectedWorkspaceId={selectedWorkspaceId}
 															chatOrganizationId={chatOrganizationId}
@@ -1697,12 +1710,16 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								Interrupting. Waiting for the agent to stop.
 							</span>
 						)}
-						{!isStreaming && (
+						{/* Streaming hides voice/recording controls above but never
+						hides submission itself: a turn already running still
+						accepts a new prompt, it just joins the queue instead of
+						starting immediately, so this button stays alongside Stop. */}
+						{(!isStreaming || isQueueingSubmission) && (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button
 										size="icon"
-										variant="default"
+										variant={isQueueingSubmission ? "subtle" : "default"}
 										className="size-7 rounded-full transition-colors [&>svg]:!size-5 [&>svg]:p-0"
 										onClick={
 											speech.isRecording ? handleAcceptRecording : handleSubmit

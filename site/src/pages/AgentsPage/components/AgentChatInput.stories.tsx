@@ -410,6 +410,69 @@ export const StreamingInterruptPending: Story = {
 	},
 };
 
+export const StreamingAllowsQueueingAPrompt: Story = {
+	args: {
+		isStreaming: true,
+		onInterrupt: fn(),
+		isInterruptPending: false,
+		onSend: fn(),
+		initialValue: "tell me the current git branch",
+	},
+	play: async ({ canvasElement, args }) => {
+		const canvas = within(canvasElement);
+
+		const editor = canvas.getByTestId("chat-message-input");
+		await waitFor(() => {
+			expect(editor.textContent).toBe("tell me the current git branch");
+		});
+
+		// Stop (current turn) and Queue (new prompt) are both present and
+		// independently actionable — stopping the turn must never be the
+		// only way to get rid of the composer's content.
+		const stopButton = canvas.getByRole("button", { name: "Stop" });
+		expect(stopButton).toBeEnabled();
+		const queueButton = canvas.getByRole("button", { name: "Queue" });
+		await waitFor(() => {
+			expect(queueButton).toBeEnabled();
+		});
+
+		await userEvent.click(queueButton);
+
+		await waitFor(() => {
+			expect(args.onSend).toHaveBeenCalledWith(
+				"tell me the current git branch",
+			);
+		});
+		// Queueing a prompt is a plain send call from the composer's point
+		// of view — the parent decides server-side queue vs. immediate
+		// dispatch, so onInterrupt (Stop) must not have been touched.
+		expect(args.onInterrupt).not.toHaveBeenCalled();
+	},
+};
+
+export const StreamingWithEmptyComposerDisablesQueueButton: Story = {
+	args: {
+		isStreaming: true,
+		onInterrupt: fn(),
+		isInterruptPending: false,
+		initialValue: "",
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		// Stop is always actionable; Queue has nothing to submit yet, same
+		// as the non-streaming Send button's disabled-until-input behavior.
+		expect(canvas.getByRole("button", { name: "Stop" })).toBeEnabled();
+		expect(canvas.getByRole("button", { name: "Queue" })).toBeDisabled();
+		// The empty composer's placeholder communicates queue semantics
+		// instead of an immediate send while a turn is already running.
+		await waitFor(() => {
+			expect(
+				canvas.getByText("Queue for after this turn..."),
+			).toBeInTheDocument();
+		});
+	},
+};
+
 const longContent = Array.from(
 	{ length: 60 },
 	(_, i) =>
