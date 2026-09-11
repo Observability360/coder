@@ -1357,7 +1357,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 														sideOffset={8}
 														className="w-64 p-0"
 													>
-														<WorkspacePickerList
+														<RepositoryWorkspacePickerList
 															workspaceOptions={workspaceOptions}
 															selectedWorkspaceId={selectedWorkspaceId}
 															chatOrganizationId={chatOrganizationId}
