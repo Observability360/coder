@@ -751,6 +751,7 @@ type DeploymentValues struct {
 	Prebuilds                               PrebuildsConfig                      `json:"workspace_prebuilds,omitempty" typescript:",notnull"`
 	EnableAITasks                           serpent.Bool                         `json:"enable_ai_tasks,omitempty" typescript:",notnull"`
 	AI                                      AIConfig                             `json:"ai,omitempty"`
+	RepositoryCatalog                       RepositoryCatalogConfig              `json:"repository_catalog,omitempty" typescript:",notnull"`
 	StatsCollection                         StatsCollectionConfig                `json:"stats_collection,omitempty" typescript:",notnull"`
 	TemplateBuilder                         TemplateBuilderConfig                `json:"template_builder,omitempty"`
 
@@ -1697,6 +1698,11 @@ communicating directly.`,
 			Name:        "Transcription",
 			YAML:        "transcription",
 			Description: "Configure server-side audio transcription proxying (POST /api/v2/audio-transcriptions).",
+		}
+		deploymentGroupRepositoryCatalog = serpent.Group{
+			Name:        "Repository Catalog",
+			YAML:        "repository_catalog",
+			Description: "Configure the repository-driven Attach Workspace picker (GET/POST /api/v2/repository-catalog/*).",
 		}
 		deploymentGroupAIGateway = serpent.Group{
 			Name: "AI Gateway",
@@ -4481,6 +4487,50 @@ Write out the current server config as YAML to stdout.`,
 			YAML:        "timeout",
 			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
 		},
+		// Repository Catalog Options — GET /api/v2/repository-catalog/repositories
+		// lists a GitHub organization's accessible repos and POST .../attach
+		// lazily finds-or-creates the requesting user's workspace for one of
+		// them. Disabled unless GitHubOrg and GitHubToken are both set.
+		{
+			Name:        "Repository Catalog: GitHub Organization",
+			Description: "GitHub organization whose repositories populate the Attach Workspace picker. Disabled unless this and --repository-catalog-github-token are both set.",
+			Flag:        "repository-catalog-github-org",
+			Env:         "CODER_REPOSITORY_CATALOG_GITHUB_ORG",
+			Value:       &c.RepositoryCatalog.GitHubOrg,
+			Default:     "",
+			Group:       &deploymentGroupRepositoryCatalog,
+			YAML:        "github_org",
+		},
+		{
+			Name:        "Repository Catalog: GitHub Token",
+			Description: "GitHub token used server-side to list the organization's repositories. Needs read access to repository metadata (classic PAT: repo + read:org). Never sent to the browser.",
+			Flag:        "repository-catalog-github-token",
+			Env:         "CODER_REPOSITORY_CATALOG_GITHUB_TOKEN",
+			Value:       &c.RepositoryCatalog.GitHubToken,
+			Default:     "",
+			Group:       &deploymentGroupRepositoryCatalog,
+			Annotations: serpent.Annotations{}.Mark(annotationSecretKey, "true"),
+		},
+		{
+			Name:        "Repository Catalog: Template Name",
+			Description: "Name of the template used to lazily create a repository's workspace.",
+			Flag:        "repository-catalog-template-name",
+			Env:         "CODER_REPOSITORY_CATALOG_TEMPLATE_NAME",
+			Value:       &c.RepositoryCatalog.TemplateName,
+			Default:     "docker-git",
+			Group:       &deploymentGroupRepositoryCatalog,
+			YAML:        "template_name",
+		},
+		{
+			Name:        "Repository Catalog: Git Repo Parameter Name",
+			Description: "Name of the template's rich parameter that receives the repository's SSH clone URL.",
+			Flag:        "repository-catalog-git-repo-parameter-name",
+			Env:         "CODER_REPOSITORY_CATALOG_GIT_REPO_PARAMETER_NAME",
+			Value:       &c.RepositoryCatalog.GitRepoParameterName,
+			Default:     "git_repo",
+			Group:       &deploymentGroupRepositoryCatalog,
+			YAML:        "git_repo_parameter_name",
+		},
 		// AI Bridge Options (deprecated in favor of AI Gateway options)
 		{
 			Name:        "AI Bridge Enabled",
@@ -5184,6 +5234,26 @@ type AIConfig struct {
 	BridgeProxyConfig AIBridgeProxyConfig `json:"aibridge_proxy,omitempty"`
 	Chat              ChatConfig          `json:"chat,omitempty" typescript:",notnull"`
 	Transcription     TranscriptionConfig `json:"transcription,omitempty" typescript:",notnull"`
+}
+
+// RepositoryCatalogConfig backs the repository-driven "Attach workspace"
+// picker: GET /api/v2/repository-catalog/repositories lists the configured
+// GitHub organization's accessible, non-archived repositories, and
+// POST /api/v2/repository-catalog/attach lazily finds-or-creates a workspace
+// for one of them using the configured template + git-clone parameter.
+// Disabled (both endpoints 404) unless GitHubOrg and GitHubToken are set.
+type RepositoryCatalogConfig struct {
+	GitHubOrg   serpent.String `json:"github_org" typescript:",notnull"`
+	GitHubToken serpent.String `json:"github_token" typescript:",notnull"`
+	// TemplateName selects the template used to lazily create a repository
+	// workspace (matched by name, active version used). Defaults to the
+	// existing "docker-git" template already used for every manually created
+	// per-repository workspace in production.
+	TemplateName serpent.String `json:"template_name" typescript:",notnull"`
+	// GitRepoParameterName is the template's rich parameter that receives the
+	// repository's SSH clone URL. Defaults to "git_repo", the parameter name
+	// the docker-git template already defines.
+	GitRepoParameterName serpent.String `json:"git_repo_parameter_name" typescript:",notnull"`
 }
 
 type TemplateBuilderConfig struct {

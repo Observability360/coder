@@ -326,6 +326,32 @@ export type DeleteWorkspaceOptions = Pick<
 	"log_level" | "orphan"
 >;
 
+// Repository-driven "Attach workspace" picker. Not generated from
+// typesGenerated.ts — see the transcribeAudio codegen-gap note further down
+// in this file.
+export interface Repository {
+	id: number;
+	owner: string;
+	name: string;
+	full_name: string;
+	private: boolean;
+	default_branch: string;
+	clone_url: string;
+	html_url: string;
+	// Present when the current user already owns a workspace associated
+	// with this repository.
+	workspace_id?: string;
+}
+
+export interface RepositoryCatalogResponse {
+	repositories: Repository[];
+}
+
+export interface AttachRepositoryWorkspaceResponse {
+	workspace: TypesGen.Workspace;
+	created: boolean;
+}
+
 export type DeploymentConfig = Readonly<{
 	config: TypesGen.DeploymentValues;
 	options: TypesGen.SerpentOption[];
@@ -2619,6 +2645,29 @@ class ApiMethods {
 			{ headers: { "Content-Type": blob.type } },
 		);
 
+		return response.data;
+	};
+
+	// Repository-driven "Attach workspace" picker. Not codersdk.Repository /
+	// RepositoryCatalogResponse / AttachRepositoryWorkspaceResponse from
+	// typesGenerated.ts: those types don't exist there yet (added without a
+	// regenerate-types pass). Declared inline here, same rationale as
+	// transcribeAudio above.
+	getRepositoryCatalog = async (): Promise<RepositoryCatalogResponse> => {
+		const response = await this.axios.get<RepositoryCatalogResponse>(
+			"/api/v2/repository-catalog/repositories",
+		);
+		return response.data;
+	};
+
+	attachRepositoryWorkspace = async (
+		owner: string,
+		repo: string,
+	): Promise<AttachRepositoryWorkspaceResponse> => {
+		const response = await this.axios.post<AttachRepositoryWorkspaceResponse>(
+			"/api/v2/repository-catalog/attach",
+			{ owner, repo },
+		);
 		return response.data;
 	};
 
