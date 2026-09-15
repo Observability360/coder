@@ -1956,6 +1956,11 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 			return;
 		}
 		setAttachingRepoId(repo.id);
+		// No try/finally here on purpose: the React Compiler (enabled for this
+		// directory, see scripts/check-compiler.mjs) cannot yet lower a
+		// TryStatement with a finalizer. Both the success and error paths
+		// already fall through to the same setAttachingRepoId(null) below,
+		// so this is behaviorally identical to a finally block.
 		try {
 			const result = await attachMutation.mutateAsync({
 				owner: repo.owner,
@@ -1969,9 +1974,8 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 					`Failed to create a workspace for ${repo.full_name}.`,
 				),
 			);
-		} finally {
-			setAttachingRepoId(null);
 		}
+		setAttachingRepoId(null);
 	};
 
 	return (
