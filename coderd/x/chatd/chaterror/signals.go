@@ -15,7 +15,7 @@ type providerHint struct {
 
 var (
 	statusCodePattern       = regexp.MustCompile(`(?:status(?:\s+code)?|http)\s*[:=]?\s*(\d{3})`)
-	standaloneStatusPattern = regexp.MustCompile(`\b(?:401|403|408|429|500|502|503|504|529)\b`)
+	standaloneStatusPattern = regexp.MustCompile(`\b(?:401|403|408|429|500|502|503|504|524|529)\b`)
 	providerHints           = []providerHint{
 		{provider: "openai-compat", patterns: []string{"openai-compat", "openai compatible"}},
 		{provider: "azure", patterns: []string{"azure openai", "azure-openai"}},

@@ -490,6 +490,99 @@ func runRecordRetryStateRejectCase(t *testing.T, tc recordRetryStateRejectCase) 
 // positive cases and generated disallowed cases; rejection cases that
 // exercise legal matrix rows with invalid inputs live here so the
 // matrix entry point stays focused.
+// TestNotifyChildTerminal_WakesIdleParent reproduces the 2026-09-16 O360
+// incident fix at the transition level: a subagent (child) reaching a
+// terminal state must wake an idle parent (StateW = completed subagent
+// waiting for review, or StateE0 = the parent's own prior turn errored)
+// by inserting a system notice and resuming it into StateR0 -- exactly
+// like SendMessage does for a real user message, but without needing
+// one. Before this transition existed, nothing in chatd woke the
+// parent at all: it could stay in StateW/StateE0 forever even after
+// every child finished.
+func TestNotifyChildTerminal_WakesIdleParent(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name          string
+		parentStatus  database.ChatStatus
+		wantFromState chatstate.ExecutionState
+	}{
+		{name: "FromWaiting", parentStatus: database.ChatStatusWaiting, wantFromState: chatstate.StateW},
+		{name: "FromError", parentStatus: database.ChatStatusError, wantFromState: chatstate.StateE0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newTestFixture(t)
+			ctx := testutil.Context(t, testutil.WaitShort)
+
+			parent := dbgen.Chat(t, f.DB, database.Chat{
+				OrganizationID:    f.Org.ID,
+				OwnerID:           f.User.ID,
+				LastModelConfigID: f.Model.ID,
+				Title:             "parent",
+				Status:            tt.parentStatus,
+			})
+			require.Equal(t, tt.wantFromState, f.classify(ctx, t, parent.ID))
+
+			child := dbgen.Chat(t, f.DB, database.Chat{
+				OrganizationID:    f.Org.ID,
+				OwnerID:           f.User.ID,
+				LastModelConfigID: f.Model.ID,
+				Title:             "child",
+				Status:            database.ChatStatusWaiting,
+				ParentChatID:      uuid.NullUUID{UUID: parent.ID, Valid: true},
+				RootChatID:        uuid.NullUUID{UUID: parent.ID, Valid: true},
+			})
+
+			machine := chatstate.NewChatMachine(f.DB, f.Pub, parent.ID)
+			var result chatstate.NotifyChildTerminalResult
+			err := machine.Update(ctx, func(tx *chatstate.Tx, _ database.Store) error {
+				var txErr error
+				result, txErr = tx.NotifyChildTerminal(chatstate.NotifyChildTerminalInput{
+					ChildChatID:   child.ID,
+					ChildTitle:    "child",
+					ChildTerminal: "completed",
+				})
+				return txErr
+			})
+			require.NoError(t, err)
+			require.Len(t, result.InsertedMessages, 1, "parent must see a notice describing which child finished")
+			require.Equal(t, database.ChatMessageRoleSystem, result.InsertedMessages[0].Role)
+			require.Equal(t, database.ChatStatusRunning, result.Chat.Status)
+			require.Equal(t, chatstate.StateR0, f.classify(ctx, t, parent.ID))
+
+			// Two children finishing at nearly the same time must not
+			// double-resume the parent. The DB row lock inside
+			// ChatMachine.Update serializes this second attempt to run
+			// strictly after the first commits, so it observes the parent
+			// already in R0 -- NotifyChildTerminal is not legal from R0,
+			// so this is the expected benign no-op, not a bug.
+			sibling := dbgen.Chat(t, f.DB, database.Chat{
+				OrganizationID:    f.Org.ID,
+				OwnerID:           f.User.ID,
+				LastModelConfigID: f.Model.ID,
+				Title:             "sibling",
+				Status:            database.ChatStatusWaiting,
+				ParentChatID:      uuid.NullUUID{UUID: parent.ID, Valid: true},
+				RootChatID:        uuid.NullUUID{UUID: parent.ID, Valid: true},
+			})
+			err = machine.Update(ctx, func(tx *chatstate.Tx, _ database.Store) error {
+				_, txErr := tx.NotifyChildTerminal(chatstate.NotifyChildTerminalInput{
+					ChildChatID:   sibling.ID,
+					ChildTitle:    "sibling",
+					ChildTerminal: "completed",
+				})
+				return txErr
+			})
+			require.ErrorIs(t, err, chatstate.ErrTransitionNotAllowed)
+
+			final := f.readChat(ctx, t, parent.ID)
+			require.Equal(t, database.ChatStatusRunning, final.Status,
+				"second concurrent child-terminal notify must not touch an already-resumed parent")
+		})
+	}
+}
+
 func TestTransitionInputValidation(t *testing.T) {
 	t.Parallel()
 

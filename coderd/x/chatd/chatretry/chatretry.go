@@ -6,6 +6,7 @@ package chatretry
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"time"
 
 	"golang.org/x/xerrors"
@@ -45,10 +46,26 @@ func Delay(attempt int) time.Duration {
 	return d
 }
 
+// jitteredDelay applies full jitter (a uniform random duration in
+// [0, d]) to an exponential backoff value so many chats retrying the
+// same transient gateway/provider failure at once do not all wake and
+// re-hit it on the same tick. Provider Retry-After hints in
+// effectiveDelay are a floor, not the jittered value, and are applied
+// after this call so an explicit provider-requested delay is never
+// shortened by jitter.
+func jitteredDelay(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(d)) + 1)
+}
+
 // effectiveDelay returns the delay for the given 0-indexed attempt
-// while honoring any provider-supplied minimum retry delay.
+// while honoring any provider-supplied minimum retry delay. Jitter is
+// applied to the computed exponential backoff only; an explicit
+// provider Retry-After hint is a floor and is never jittered down.
 func effectiveDelay(attempt int, classified ClassifiedError) time.Duration {
-	delay := Delay(attempt)
+	delay := jitteredDelay(Delay(attempt))
 	if classified.RetryAfter > delay {
 		return classified.RetryAfter
 	}

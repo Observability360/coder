@@ -4428,6 +4428,14 @@ func (p *Server) maybeFinalizeTurnStatusLabelAndPush(
 		if status == database.ChatStatusWaiting {
 			p.storeSubagentReportSummaryAsync(ctx, chat, logger)
 		}
+		// A subagent reaching either terminal state (waiting = completed,
+		// error = permanently failed) must wake its parent: nothing else
+		// in this package does. Without this call a parent that spawned
+		// children and had no other pending work stayed in StateW forever,
+		// even after every child finished.
+		if status == database.ChatStatusWaiting || status == database.ChatStatusError {
+			p.notifyParentOfChildTerminalAsync(ctx, chat, status, logger)
+		}
 		return
 	}
 
@@ -4890,6 +4898,81 @@ func (p *Server) storeSubagentReportSummary(
 		return
 	}
 	p.updateChatSummary(ctx, logger, chat, chat.HistoryVersion, summary)
+}
+
+// notifyParentOfChildTerminalAsync wakes chat's parent, if any, after chat
+// (a subagent) reaches a terminal state. Best-effort and fire-and-forget,
+// mirroring storeSubagentReportSummaryAsync: a failure here must never fail
+// or delay the child's own turn completion.
+func (p *Server) notifyParentOfChildTerminalAsync(
+	ctx context.Context,
+	chat database.Chat,
+	status database.ChatStatus,
+	logger slog.Logger,
+) {
+	terminal := "completed"
+	if status == database.ChatStatusError {
+		terminal = "failed"
+	}
+	notifyCtx, stopNotifyCtx := p.inflightContext(ctx)
+	if err := p.goInflight(func() {
+		defer stopNotifyCtx()
+		p.notifyParentOfChildTerminal(notifyCtx, chat, terminal, logger)
+	}); err != nil {
+		stopNotifyCtx()
+		logger.Debug(context.WithoutCancel(ctx), "skipped parent child-terminal notify",
+			slog.F("chat_id", chat.ID), slog.Error(err))
+	}
+}
+
+// notifyParentOfChildTerminal performs the actual [chatstate.Tx.NotifyChildTerminal]
+// transition against chat's parent. A [*chatstate.TransitionError] here means
+// the parent is currently busy (running/interrupting/requires-action) or has
+// queued work (E1) — it will observe this child's fresh status on its own
+// next turn regardless, so that outcome is logged at Debug, not surfaced as a
+// failure. The DB row lock inside [chatstate.ChatMachine.Update] makes this
+// safe to call concurrently for two children of the same parent finishing at
+// nearly the same time: at most one observes an idle parent and resumes it.
+func (p *Server) notifyParentOfChildTerminal(
+	ctx context.Context,
+	chat database.Chat,
+	terminal string,
+	logger slog.Logger,
+) {
+	if !chat.ParentChatID.Valid {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, subagentReportSummaryTimeout)
+	defer cancel()
+
+	//nolint:gocritic // Narrow daemon access for waking the parent chat.
+	authCtx := dbauthz.AsChatd(ctx)
+	parentID := chat.ParentChatID.UUID
+	machine := chatstate.NewChatMachine(p.db, p.pubsub, parentID)
+	var result chatstate.NotifyChildTerminalResult
+	err := machine.Update(authCtx, func(tx *chatstate.Tx, _ database.Store) error {
+		var txErr error
+		result, txErr = tx.NotifyChildTerminal(chatstate.NotifyChildTerminalInput{
+			ChildChatID:   chat.ID,
+			ChildTitle:    chat.Title,
+			ChildTerminal: terminal,
+		})
+		return txErr
+	})
+	var transitionErr *chatstate.TransitionError
+	if errors.As(err, &transitionErr) {
+		logger.Debug(ctx, "parent not idle, skipping child-terminal wake",
+			slog.F("parent_chat_id", parentID),
+			slog.F("child_chat_id", chat.ID))
+		return
+	}
+	if err != nil {
+		logger.Warn(ctx, "failed to notify parent of child terminal state",
+			slog.F("parent_chat_id", parentID),
+			slog.F("child_chat_id", chat.ID), slog.Error(err))
+		return
+	}
+	p.publishChatPubsubEvent(result.Chat, codersdk.ChatWatchEventKindStatusChange, nil)
 }
 
 func (p *Server) webpushConfigured() bool {
