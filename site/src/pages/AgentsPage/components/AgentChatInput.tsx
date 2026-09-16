@@ -1901,6 +1901,15 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 	const catalogQuery = useQuery(repositoryCatalog(true));
 	const attachMutation = useMutation(attachRepositoryWorkspace(queryClient));
 	const [attachingRepoId, setAttachingRepoId] = useState<number | null>(null);
+	// Repositories is the default so every existing repository-catalog flow
+	// (and the tests covering it) is unaffected. "Existing workspaces" is an
+	// explicit opt-in for workspaces that intentionally aren't modeled around
+	// a single repo (e.g. a multi-repo administrative workspace) and so never
+	// show up in the repository-driven list above, no matter how the
+	// catalog is configured.
+	const [activeTab, setActiveTab] = useState<"repositories" | "workspaces">(
+		"repositories",
+	);
 
 	const notConfigured =
 		isAxiosError(catalogQuery.error) &&
@@ -1947,6 +1956,11 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 			return;
 		}
 		setAttachingRepoId(repo.id);
+		// No try/finally here on purpose: the React Compiler (enabled for this
+		// directory, see scripts/check-compiler.mjs) cannot yet lower a
+		// TryStatement with a finalizer. Both the success and error paths
+		// already fall through to the same setAttachingRepoId(null) below,
+		// so this is behaviorally identical to a finally block.
 		try {
 			const result = await attachMutation.mutateAsync({
 				owner: repo.owner,
@@ -1960,52 +1974,85 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 					`Failed to create a workspace for ${repo.full_name}.`,
 				),
 			);
-		} finally {
-			setAttachingRepoId(null);
 		}
+		setAttachingRepoId(null);
 	};
 
 	return (
-		<Command loop>
-			<CommandInput placeholder="Search repositories..." className="text-xs" />
-			<CommandList>
-				<CommandEmpty className="text-xs">No repositories found</CommandEmpty>
-				<CommandGroup>
-					{repositories.map((repo) => {
-						const isAttached = repo.workspace_id === selectedWorkspaceId;
-						const isAttaching = attachingRepoId === repo.id;
-						const statusLabel = isAttached
-							? "Attached"
-							: repo.workspace_id
-								? "Ready"
-								: "Not created";
+		<div className="flex flex-col">
+			<div className="flex gap-1 border-b border-border-default p-1">
+				<Button
+					size="xs"
+					variant={activeTab === "repositories" ? "outline" : "subtle"}
+					className="flex-1"
+					onClick={() => setActiveTab("repositories")}
+				>
+					Repositories
+				</Button>
+				<Button
+					size="xs"
+					variant={activeTab === "workspaces" ? "outline" : "subtle"}
+					className="flex-1"
+					onClick={() => setActiveTab("workspaces")}
+				>
+					Existing workspaces
+				</Button>
+			</div>
+			{activeTab === "workspaces" ? (
+				<WorkspacePickerList
+					workspaceOptions={workspaceOptions}
+					selectedWorkspaceId={selectedWorkspaceId}
+					chatOrganizationId={chatOrganizationId}
+					onSelect={onSelect}
+				/>
+			) : (
+				<Command loop>
+					<CommandInput
+						placeholder="Search repositories..."
+						className="text-xs"
+					/>
+					<CommandList>
+						<CommandEmpty className="text-xs">
+							No repositories found
+						</CommandEmpty>
+						<CommandGroup>
+							{repositories.map((repo) => {
+								const isAttached = repo.workspace_id === selectedWorkspaceId;
+								const isAttaching = attachingRepoId === repo.id;
+								const statusLabel = isAttached
+									? "Attached"
+									: repo.workspace_id
+										? "Ready"
+										: "Not created";
 
-						return (
-							<CommandItem
-								className="text-xs font-normal"
-								key={repo.id}
-								value={repo.name}
-								disabled={isAttaching}
-								onSelect={() => {
-									void handleSelectRepository(repo);
-								}}
-							>
-								<span className="min-w-0 flex-1 truncate">{repo.name}</span>
-								{isAttaching ? (
-									<Spinner loading className="size-3 shrink-0" />
-								) : (
-									<span className="shrink-0 text-content-secondary">
-										{statusLabel}
-									</span>
-								)}
-								{isAttached && (
-									<CheckIcon className="ml-auto size-icon-sm shrink-0" />
-								)}
-							</CommandItem>
-						);
-					})}
-				</CommandGroup>
-			</CommandList>
-		</Command>
+								return (
+									<CommandItem
+										className="text-xs font-normal"
+										key={repo.id}
+										value={repo.name}
+										disabled={isAttaching}
+										onSelect={() => {
+											void handleSelectRepository(repo);
+										}}
+									>
+										<span className="min-w-0 flex-1 truncate">{repo.name}</span>
+										{isAttaching ? (
+											<Spinner loading className="size-3 shrink-0" />
+										) : (
+											<span className="shrink-0 text-content-secondary">
+												{statusLabel}
+											</span>
+										)}
+										{isAttached && (
+											<CheckIcon className="ml-auto size-icon-sm shrink-0" />
+										)}
+									</CommandItem>
+								);
+							})}
+						</CommandGroup>
+					</CommandList>
+				</Command>
+			)}
+		</div>
 	);
 };
