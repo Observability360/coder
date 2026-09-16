@@ -210,9 +210,15 @@ func Classify(err error) ClassifiedError {
 		timeoutPatternMatch = false
 	}
 	providerTransportResetMatch := providerTransportReset && statusCode == 0
+	// 524 (Cloudflare/edge "A Timeout Occurred") is a gateway-level
+	// timeout signal exactly like 502/503/504: the edge or origin took
+	// too long, not a permanent provider failure. AI Bridge/OmniRoute
+	// can return a bare 524 with an empty error body (no text for
+	// timeoutPatternMatch to catch), so it needs the same explicit
+	// numeric membership as the other gateway-timeout codes below.
 	timeoutMatch := providerTransportResetMatch || deadline ||
 		statusCode == 408 || statusCode == 502 || statusCode == 503 ||
-		statusCode == 504 || retryableHTTP2StreamReset ||
+		statusCode == 504 || statusCode == 524 || retryableHTTP2StreamReset ||
 		timeoutPatternMatch
 	genericRetryableMatch := statusCode == 500 || containsAny(lower, genericRetryablePatterns...)
 

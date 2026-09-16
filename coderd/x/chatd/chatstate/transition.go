@@ -13,6 +13,7 @@ const (
 	TransitionCreateChat              Transition = "CreateChat"
 	TransitionSetArchived             Transition = "SetArchived"
 	TransitionSendMessage             Transition = "SendMessage"
+	TransitionNotifyChildTerminal     Transition = "NotifyChildTerminal"
 	TransitionEditMessage             Transition = "EditMessage"
 	TransitionRequestCompaction       Transition = "RequestCompaction"
 	TransitionDeleteQueuedMessage     Transition = "DeleteQueuedMessage"
@@ -44,6 +45,7 @@ var AllExecutionTransitions = []Transition{
 	TransitionCreateChat,
 	TransitionSetArchived,
 	TransitionSendMessage,
+	TransitionNotifyChildTerminal,
 	TransitionEditMessage,
 	TransitionRequestCompaction,
 	TransitionDeleteQueuedMessage,
@@ -77,17 +79,19 @@ var transitionMatrix = map[ExecutionState]map[Transition][]ExecutionState{
 		TransitionCreateChat: {StateR0},
 	},
 	StateW: {
-		TransitionSetArchived:       {StateXW},
-		TransitionSendMessage:       {StateR0},
-		TransitionEditMessage:       {StateR0},
-		TransitionRequestCompaction: {StateR0},
-		TransitionFinishError:       {StateE0},
+		TransitionSetArchived:         {StateXW},
+		TransitionSendMessage:         {StateR0},
+		TransitionEditMessage:         {StateR0},
+		TransitionRequestCompaction:   {StateR0},
+		TransitionFinishError:         {StateE0},
+		TransitionNotifyChildTerminal: {StateR0},
 	},
 	StateE0: {
-		TransitionSetArchived:       {StateXE0},
-		TransitionSendMessage:       {StateR0},
-		TransitionEditMessage:       {StateR0},
-		TransitionRequestCompaction: {StateR0},
+		TransitionSetArchived:         {StateXE0},
+		TransitionSendMessage:         {StateR0},
+		TransitionEditMessage:         {StateR0},
+		TransitionRequestCompaction:   {StateR0},
+		TransitionNotifyChildTerminal: {StateR0},
 	},
 	StateE1: {
 		TransitionSetArchived:          {StateXE1},
