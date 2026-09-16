@@ -88,6 +88,27 @@ func TestRetry_MultipleTransientThenSuccess(t *testing.T) {
 	require.Equal(t, 4, calls)
 }
 
+// TestRetry_GatewayTimeout524ThenSuccess reproduces the 2026-09-16 O360
+// incident sequence at the retry-engine level: OmniRoute/AI Bridge
+// returns three bare 524s (Cloudflare/edge "A Timeout Occurred") in a
+// row, then a normal 200. Before 524 was added to chaterror's
+// timeout classification, the very first 524 was non-retryable and
+// Retry would have returned immediately instead of calling fn again.
+func TestRetry_GatewayTimeout524ThenSuccess(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	err := chatretry.Retry(context.Background(), func(_ context.Context) error {
+		calls++
+		if calls <= 3 {
+			return xerrors.New("status 524 from upstream")
+		}
+		return nil
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, 4, calls)
+}
+
 func TestRetry_ContextCanceledStatus500ThenSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -306,8 +327,13 @@ func TestRetry_OnRetryCalledWithCorrectArgs(t *testing.T) {
 	require.Equal(t, "received status 429 from upstream", records[0].errMsg)
 	require.Equal(t, expected, records[0].classified)
 	require.Equal(t, expected, records[1].classified)
-	require.Equal(t, chatretry.Delay(0), records[0].delay)
-	require.Equal(t, chatretry.Delay(1), records[1].delay)
+	// Delay is now full-jittered (a uniform random duration in
+	// (0, Delay(attempt)]), so the exact backoff value is no longer
+	// reproducible — only its upper bound is.
+	require.Greater(t, records[0].delay, time.Duration(0))
+	require.LessOrEqual(t, records[0].delay, chatretry.Delay(0))
+	require.Greater(t, records[1].delay, time.Duration(0))
+	require.LessOrEqual(t, records[1].delay, chatretry.Delay(1))
 }
 
 func TestRetry_OnRetryNilDoesNotPanic(t *testing.T) {
@@ -332,6 +358,7 @@ func TestRetry_UsesRetryAfterAsDelayFloor(t *testing.T) {
 		name           string
 		headers        map[string]string
 		wantDelay      time.Duration
+		wantDelayIsMax bool // true when wantDelay is a jittered upper bound, not an exact value
 		wantRetryAfter time.Duration
 	}{
 		{
@@ -341,9 +368,15 @@ func TestRetry_UsesRetryAfterAsDelayFloor(t *testing.T) {
 			wantRetryAfter: 3 * time.Second,
 		},
 		{
+			// RetryAfter (500ms) is shorter than the base exponential
+			// delay, so the (now full-jittered) base delay wins as the
+			// floor instead. Jitter makes the exact value
+			// non-reproducible, so wantDelay is an upper bound here,
+			// not the value gotDelay must equal.
 			name:           "ShorterThanBaseDelay",
 			headers:        map[string]string{"Retry-After-Ms": "500"},
 			wantDelay:      chatretry.Delay(0),
+			wantDelayIsMax: true,
 			wantRetryAfter: 500 * time.Millisecond,
 		},
 	}
@@ -381,7 +414,12 @@ func TestRetry_UsesRetryAfterAsDelayFloor(t *testing.T) {
 			require.True(t, gotClassified.Retryable)
 			require.Equal(t, 429, gotClassified.StatusCode)
 			require.Equal(t, tt.wantRetryAfter, gotClassified.RetryAfter)
-			require.Equal(t, tt.wantDelay, gotDelay)
+			if tt.wantDelayIsMax {
+				require.Greater(t, gotDelay, time.Duration(0))
+				require.LessOrEqual(t, gotDelay, tt.wantDelay)
+			} else {
+				require.Equal(t, tt.wantDelay, gotDelay)
+			}
 		})
 	}
 }

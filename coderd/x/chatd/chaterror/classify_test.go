@@ -40,6 +40,27 @@ func TestClassify(t *testing.T) {
 			},
 		},
 		{
+			// Reproduces the 2026-09-16 O360 incident: AI Bridge/OmniRoute
+			// returned a bare "status 524" (Cloudflare/edge "A Timeout
+			// Occurred") with an empty provider error body — no timeout
+			// wording for timeoutPatternMatch to catch, so classification
+			// depended entirely on the numeric status code reaching
+			// timeoutMatch. Before this fix, 524 fell through every rule
+			// to the generic non-retryable fallback, which is exactly
+			// what turned a single gateway timeout into a permanent chat
+			// failure instead of a retried one.
+			name: "GatewayTimeout524IsRetryableTimeout",
+			err:  xerrors.New("status 524 from upstream"),
+			want: chaterror.ClassifiedError{
+				Message:    "The AI provider is temporarily unavailable.",
+				Detail:     "status 524 from upstream",
+				Kind:       codersdk.ChatErrorKindTimeout,
+				Provider:   "",
+				Retryable:  true,
+				StatusCode: 524,
+			},
+		},
+		{
 			name: "ExplicitAnthropicOverload",
 			err:  xerrors.New("anthropic overloaded_error"),
 			want: chaterror.ClassifiedError{

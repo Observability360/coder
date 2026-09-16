@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -389,6 +390,92 @@ type SendMessageInput struct {
 type SendMessageResult struct {
 	InsertedMessages []database.ChatMessage
 	QueuedMessage    *database.ChatQueuedMessage
+}
+
+// NotifyChildTerminalInput configures [Tx.NotifyChildTerminal].
+type NotifyChildTerminalInput struct {
+	// ChildChatID is the subagent chat that just reached a terminal
+	// state.
+	ChildChatID uuid.UUID
+	// ChildTitle is the subagent's task title, for a human/model
+	// readable notice.
+	ChildTitle string
+	// ChildTerminal is a short human-readable label for the child's
+	// terminal state, e.g. "completed" or "failed".
+	ChildTerminal string
+}
+
+// NotifyChildTerminalResult is returned by [Tx.NotifyChildTerminal].
+type NotifyChildTerminalResult struct {
+	InsertedMessages []database.ChatMessage
+	// Chat is the parent chat row after the resume transition, for
+	// callers that need to publish a UI status-change event the same
+	// way every other idle->running transition does.
+	Chat database.Chat
+}
+
+// NotifyChildTerminal wakes an idle parent chat (StateW or StateE0) when
+// one of its subagent children reaches a terminal state (completed or
+// permanently failed). It inserts a system-role notice describing which
+// child finished so the parent's next turn can see it, then resumes the
+// parent into StateR0 exactly like an idle chat resumes on SendMessage.
+//
+// This is the only place a subagent's completion feeds back into its
+// parent: before this transition existed, [maybeFinalizeTurnStatusLabelAndPush]
+// stored a subagent's report summary and returned without ever touching
+// the parent, so a parent that spawned children and had no other
+// pending work could remain in StateW indefinitely even after every
+// child finished (coderd/x/chatd bug: subagent completion does not
+// resume parent).
+//
+// Only legal from StateW/StateE0 per the transition matrix. A parent
+// that is busy (R*/I*/A*) or already has queued work (E1) will observe
+// the child's fresh status on its own next turn regardless, so callers
+// must treat a [*TransitionError] from this call as an expected,
+// benign no-op rather than a failure to surface — see
+// notifyParentOfChildTerminal in coderd/x/chatd/chatd.go. Because the
+// underlying [Tx.Update] commits under the chat's row lock, two
+// children finishing at nearly the same time can both attempt this
+// transition safely: at most one observes StateW/StateE0 and performs
+// the resume, the other sees the now-running parent and no-ops.
+func (tx *Tx) NotifyChildTerminal(input NotifyChildTerminalInput) (NotifyChildTerminalResult, error) {
+	chat, _, err := tx.requireFromAllowed(TransitionNotifyChildTerminal)
+	if err != nil {
+		return NotifyChildTerminalResult{}, err
+	}
+	noticeText := fmt.Sprintf(
+		"Subagent %q (%s) finished: %s. Review its result and continue the workflow.",
+		input.ChildTitle, input.ChildChatID, input.ChildTerminal,
+	)
+	raw, err := chatprompt.MarshalParts([]codersdk.ChatMessagePart{{
+		Type: codersdk.ChatMessagePartTypeText,
+		Text: noticeText,
+	}})
+	if err != nil {
+		return NotifyChildTerminalResult{}, xerrors.Errorf("marshal child-terminal notice: %w", err)
+	}
+	inserted, err := tx.insertMessages([]Message{{
+		Role:           database.ChatMessageRoleSystem,
+		Content:        raw,
+		Visibility:     database.ChatMessageVisibilityBoth,
+		ContentVersion: chatprompt.CurrentContentVersion,
+		ModelConfigID:  uuid.NullUUID{UUID: chat.LastModelConfigID, Valid: true},
+	}})
+	if err != nil {
+		return NotifyChildTerminalResult{}, xerrors.Errorf("insert child-terminal notice: %w", err)
+	}
+	updated, err := tx.applyExecutionState(executionStateUpdate{
+		Status:                   database.ChatStatusRunning,
+		Archived:                 false,
+		WorkerID:                 chat.WorkerID,
+		RunnerID:                 chat.RunnerID,
+		LastError:                pqtype.NullRawMessage{},
+		RequiresActionDeadlineAt: sql.NullTime{},
+	})
+	if err != nil {
+		return NotifyChildTerminalResult{}, xerrors.Errorf("set running: %w", err)
+	}
+	return NotifyChildTerminalResult{InsertedMessages: inserted, Chat: updated}, nil
 }
 
 // SendMessage admits a new user message. Depending on input state and
