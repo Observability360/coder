@@ -802,6 +802,10 @@ type sqlcQuerier interface {
 	//   3. Waiting chats with a non-empty queue and stale updated_at
 	//      (deferred-promote stranding when the worker dies before its
 	//      post-cancel cleanup runs).
+	//   4. Interrupting chats whose updated_at went stale: the interrupt
+	//      can only complete on the owning worker, so a worker that dies
+	//      mid-interrupt (e.g. a coderd restart) orphans the chat forever
+	//      (production incident 2026-09-17).
 	GetStaleChats(ctx context.Context, staleThreshold time.Time) ([]Chat, error)
 	GetTailnetPeers(ctx context.Context, id uuid.UUID) ([]TailnetPeer, error)
 	GetTailnetTunnelPeerBindingsBatch(ctx context.Context, ids []uuid.UUID) ([]GetTailnetTunnelPeerBindingsBatchRow, error)
