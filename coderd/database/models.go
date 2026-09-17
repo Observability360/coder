@@ -5325,6 +5325,8 @@ type ChatModelConfig struct {
 	OrganizationID       uuid.UUID       `db:"organization_id" json:"organization_id"`
 	GroupACL             ChatACL         `db:"group_acl" json:"group_acl"`
 	UserACL              ChatACL         `db:"user_acl" json:"user_acl"`
+	// Optional override of context_limit for combo/route-backed models whose effective capacity is larger than their first/smallest target -- sourced from the upstream provider (e.g. OmniRoute), never hardcoded. NULL falls back to context_limit.
+	EffectiveContextLimit sql.NullInt64 `db:"effective_context_limit" json:"effective_context_limit"`
 }
 
 type ChatOrganizationModelOverride struct {

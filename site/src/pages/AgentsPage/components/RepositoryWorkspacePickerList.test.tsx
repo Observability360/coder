@@ -209,4 +209,46 @@ describe("RepositoryWorkspacePickerList", () => {
 		).not.toBeInTheDocument();
 		expect(screen.getByText("aimemory-repo-luis")).toBeInTheDocument();
 	});
+
+	it("switches to the existing-workspaces tab and selects a workspace by name directly, without touching the repository catalog's attach flow", async () => {
+		vi.spyOn(API, "getRepositoryCatalog").mockResolvedValue({
+			repositories: [],
+		});
+		const attachSpy = vi.spyOn(API, "attachRepositoryWorkspace");
+		const onSelect = vi.fn();
+
+		render(
+			<RepositoryWorkspacePickerList
+				workspaceOptions={[
+					{
+						id: "ws-multi",
+						name: "o360-multi-repo",
+						organization_id: "org-1",
+					},
+				]}
+				selectedWorkspaceId={null}
+				onSelect={onSelect}
+			/>,
+		);
+
+		// Repositories is still the default tab.
+		await waitFor(() => screen.getByText("Repositories"));
+		expect(
+			screen.getByPlaceholderText("Search repositories..."),
+		).toBeInTheDocument();
+
+		await userEvent.click(screen.getByText("Existing workspaces"));
+
+		expect(
+			screen.getByPlaceholderText("Search workspaces..."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByPlaceholderText("Search repositories..."),
+		).not.toBeInTheDocument();
+
+		await userEvent.click(screen.getByText("o360-multi-repo"));
+
+		expect(onSelect).toHaveBeenCalledWith("ws-multi");
+		expect(attachSpy).not.toHaveBeenCalled();
+	});
 });

@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sqlc-dev/pqtype"
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/x/chatd/chatstate"
 	"github.com/coder/coder/v2/testutil"
 	"github.com/coder/quartz"
 )
@@ -132,6 +134,73 @@ func TestWorker_ReacquiresStaleOwnedChat(t *testing.T) {
 		RunnerID: call.input.RunnerID,
 	})
 	require.NoError(t, err)
+}
+
+// TestWorker_ReacquiresChatMidRetryAfterOwnerDies reproduces T3 from the
+// 2026-09-16 O360 524-incident resilience follow-up: a chat is mid
+// exponential-backoff wait for a transient provider error (retry_state
+// and generation_attempt already persisted, exactly as
+// taskStarter.recordGenerationRetry writes them before the wait) when
+// its owning worker dies -- modeling a coderd restart. This proves the
+// existing stale-heartbeat reclaim path (the same one
+// TestWorker_ReacquiresStaleOwnedChat covers generically) also carries
+// retry state across the reclaim: the persisted generation_attempt and
+// retry_state are read back unchanged by whichever worker reacquires
+// the chat, so a restart during a retry wait does not lose the chat,
+// its attempt count, or its last transient error, and the SAME chat
+// resumes rather than a new one being created.
+func TestWorker_ReacquiresChatMidRetryAfterOwnerDies(t *testing.T) {
+	t.Parallel()
+	f := newWorkerTestFixture(t)
+	chat := f.createRunningChat(t)
+	deadWorker := uuid.New()
+	deadRunner := uuid.New()
+	acquireChat(t, f, chat.ID, deadWorker, deadRunner)
+
+	// Simulate taskStarter.recordGenerationRetry: persist a transient
+	// classified error as retry_state and bump generation_attempt, the
+	// same two writes that happen right before the in-process
+	// waitGenerationRetry sleep -- the exact point a coderd restart can
+	// land on.
+	wantRetryState := []byte(`{"kind":"timeout","status_code":524,"retryable":true,"message":"gateway timeout"}`)
+	machine := chatstate.NewChatMachine(f.db, f.pubsub, chat.ID)
+	require.NoError(t, machine.Update(testutil.Context(t, testutil.WaitShort), func(tx *chatstate.Tx, _ database.Store) error {
+		if _, err := tx.RecordGenerationAttempt(chatstate.RecordGenerationAttemptInput{}); err != nil {
+			return err
+		}
+		_, err := tx.RecordRetryState(chatstate.RecordRetryStateInput{
+			RetryState: pqtype.NullRawMessage{RawMessage: wantRetryState, Valid: true},
+		})
+		return err
+	}))
+	primed, err := f.db.GetChatByID(testutil.Context(t, testutil.WaitShort), chat.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), primed.GenerationAttempt, "attempt count must be persisted before the retry wait, not held only in the dying worker's memory")
+	require.True(t, primed.RetryState.Valid)
+
+	// The owning worker now "dies" (coderd restart): its heartbeat goes
+	// stale while the chat is still Running with the primed retry state.
+	makeHeartbeatStale(t, f, chat.ID, deadRunner)
+
+	// A fresh worker starts (the restarted coderd) and must reclaim this
+	// exact chat -- not create a new one -- and see the persisted retry
+	// state and attempt count unchanged.
+	starter := newBlockingTaskStarter(false)
+	worker := startWorker(t, testOptions(t, f, starter))
+
+	call := starter.waitCall(t, taskKindGeneration, chat.ID)
+	require.Equal(t, worker.opts.WorkerID, call.input.WorkerID)
+	require.Equal(t, database.ChatStatusRunning, call.input.Status)
+	require.NotEqual(t, deadRunner, call.input.RunnerID, "must be reclaimed by a new runner, not the dead one")
+
+	reclaimed, err := f.db.GetChatByID(testutil.Context(t, testutil.WaitShort), chat.ID)
+	require.NoError(t, err)
+	require.Equal(t, chat.ID, reclaimed.ID, "same chat_id must continue -- no new chat is created on reclaim")
+	require.Equal(t, worker.opts.WorkerID, reclaimed.WorkerID.UUID)
+	require.NotEqual(t, deadWorker, reclaimed.WorkerID.UUID)
+	require.Equal(t, int64(1), reclaimed.GenerationAttempt, "generation_attempt must survive the reclaim unchanged")
+	require.True(t, reclaimed.RetryState.Valid, "retry_state must survive the reclaim")
+	require.JSONEq(t, string(wantRetryState), string(reclaimed.RetryState.RawMessage))
 }
 
 func TestWorker_TwoWorkersRaceSingleOwner(t *testing.T) {

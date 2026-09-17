@@ -6157,7 +6157,7 @@ func (q *sqlQuerier) DeleteChatModelConfigByID(ctx context.Context, id uuid.UUID
 
 const getChatModelConfigByID = `-- name: GetChatModelConfigByID :one
 SELECT
-    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl
+    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl, effective_context_limit
 FROM
     chat_model_configs
 WHERE
@@ -6187,13 +6187,14 @@ func (q *sqlQuerier) GetChatModelConfigByID(ctx context.Context, id uuid.UUID) (
 		&i.OrganizationID,
 		&i.GroupACL,
 		&i.UserACL,
+		&i.EffectiveContextLimit,
 	)
 	return i, err
 }
 
 const getChatModelConfigs = `-- name: GetChatModelConfigs :many
 SELECT
-    cmc.id, cmc.model, cmc.display_name, cmc.created_by, cmc.updated_by, cmc.enabled, cmc.is_default, cmc.deleted, cmc.deleted_at, cmc.created_at, cmc.updated_at, cmc.context_limit, cmc.compression_threshold, cmc.options, cmc.ai_provider_id, cmc.organization_id, cmc.group_acl, cmc.user_acl
+    cmc.id, cmc.model, cmc.display_name, cmc.created_by, cmc.updated_by, cmc.enabled, cmc.is_default, cmc.deleted, cmc.deleted_at, cmc.created_at, cmc.updated_at, cmc.context_limit, cmc.compression_threshold, cmc.options, cmc.ai_provider_id, cmc.organization_id, cmc.group_acl, cmc.user_acl, cmc.effective_context_limit
 FROM
     chat_model_configs cmc
 LEFT JOIN
@@ -6238,6 +6239,7 @@ func (q *sqlQuerier) GetChatModelConfigs(ctx context.Context, organizationID uui
 			&i.OrganizationID,
 			&i.GroupACL,
 			&i.UserACL,
+			&i.EffectiveContextLimit,
 		); err != nil {
 			return nil, err
 		}
@@ -6254,7 +6256,7 @@ func (q *sqlQuerier) GetChatModelConfigs(ctx context.Context, organizationID uui
 
 const getChatModelConfigsByOrganization = `-- name: GetChatModelConfigsByOrganization :many
 SELECT
-    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl
+    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl, effective_context_limit
 FROM
     chat_model_configs
 WHERE
@@ -6298,6 +6300,7 @@ func (q *sqlQuerier) GetChatModelConfigsByOrganization(ctx context.Context, orga
 			&i.OrganizationID,
 			&i.GroupACL,
 			&i.UserACL,
+			&i.EffectiveContextLimit,
 		); err != nil {
 			return nil, err
 		}
@@ -6314,7 +6317,7 @@ func (q *sqlQuerier) GetChatModelConfigsByOrganization(ctx context.Context, orga
 
 const getDefaultChatModelConfig = `-- name: GetDefaultChatModelConfig :one
 SELECT
-    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl
+    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl, effective_context_limit
 FROM
     chat_model_configs
 WHERE
@@ -6345,13 +6348,14 @@ func (q *sqlQuerier) GetDefaultChatModelConfig(ctx context.Context, organization
 		&i.OrganizationID,
 		&i.GroupACL,
 		&i.UserACL,
+		&i.EffectiveContextLimit,
 	)
 	return i, err
 }
 
 const getEnabledChatModelConfigByID = `-- name: GetEnabledChatModelConfigByID :one
 SELECT
-    cmc.id, cmc.model, cmc.display_name, cmc.created_by, cmc.updated_by, cmc.enabled, cmc.is_default, cmc.deleted, cmc.deleted_at, cmc.created_at, cmc.updated_at, cmc.context_limit, cmc.compression_threshold, cmc.options, cmc.ai_provider_id, cmc.organization_id, cmc.group_acl, cmc.user_acl
+    cmc.id, cmc.model, cmc.display_name, cmc.created_by, cmc.updated_by, cmc.enabled, cmc.is_default, cmc.deleted, cmc.deleted_at, cmc.created_at, cmc.updated_at, cmc.context_limit, cmc.compression_threshold, cmc.options, cmc.ai_provider_id, cmc.organization_id, cmc.group_acl, cmc.user_acl, cmc.effective_context_limit
 FROM
     chat_model_configs cmc
 JOIN
@@ -6388,13 +6392,14 @@ func (q *sqlQuerier) GetEnabledChatModelConfigByID(ctx context.Context, id uuid.
 		&i.OrganizationID,
 		&i.GroupACL,
 		&i.UserACL,
+		&i.EffectiveContextLimit,
 	)
 	return i, err
 }
 
 const getEnabledChatModelConfigsByOrganization = `-- name: GetEnabledChatModelConfigsByOrganization :many
 SELECT
-    cmc.id, cmc.model, cmc.display_name, cmc.created_by, cmc.updated_by, cmc.enabled, cmc.is_default, cmc.deleted, cmc.deleted_at, cmc.created_at, cmc.updated_at, cmc.context_limit, cmc.compression_threshold, cmc.options, cmc.ai_provider_id, cmc.organization_id, cmc.group_acl, cmc.user_acl,
+    cmc.id, cmc.model, cmc.display_name, cmc.created_by, cmc.updated_by, cmc.enabled, cmc.is_default, cmc.deleted, cmc.deleted_at, cmc.created_at, cmc.updated_at, cmc.context_limit, cmc.compression_threshold, cmc.options, cmc.ai_provider_id, cmc.organization_id, cmc.group_acl, cmc.user_acl, cmc.effective_context_limit,
     ap.type::text AS provider
 FROM
     chat_model_configs cmc
@@ -6446,6 +6451,7 @@ func (q *sqlQuerier) GetEnabledChatModelConfigsByOrganization(ctx context.Contex
 			&i.ChatModelConfig.OrganizationID,
 			&i.ChatModelConfig.GroupACL,
 			&i.ChatModelConfig.UserACL,
+			&i.ChatModelConfig.EffectiveContextLimit,
 			&i.Provider,
 		); err != nil {
 			return nil, err
@@ -6492,7 +6498,7 @@ INSERT INTO chat_model_configs (
     $13
 )
 RETURNING
-    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl
+    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl, effective_context_limit
 `
 
 type InsertChatModelConfigParams struct {
@@ -6547,6 +6553,7 @@ func (q *sqlQuerier) InsertChatModelConfig(ctx context.Context, arg InsertChatMo
 		&i.OrganizationID,
 		&i.GroupACL,
 		&i.UserACL,
+		&i.EffectiveContextLimit,
 	)
 	return i, err
 }
@@ -6586,7 +6593,7 @@ WHERE
     id = $10::uuid
     AND deleted = FALSE
 RETURNING
-    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl
+    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl, effective_context_limit
 `
 
 type UpdateChatModelConfigParams struct {
@@ -6635,6 +6642,7 @@ func (q *sqlQuerier) UpdateChatModelConfig(ctx context.Context, arg UpdateChatMo
 		&i.OrganizationID,
 		&i.GroupACL,
 		&i.UserACL,
+		&i.EffectiveContextLimit,
 	)
 	return i, err
 }
@@ -6651,7 +6659,7 @@ WHERE
     id = $4::uuid
     AND deleted = FALSE
 RETURNING
-    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl
+    id, model, display_name, created_by, updated_by, enabled, is_default, deleted, deleted_at, created_at, updated_at, context_limit, compression_threshold, options, ai_provider_id, organization_id, group_acl, user_acl, effective_context_limit
 `
 
 type UpdateChatModelConfigACLByIDParams struct {
@@ -6688,6 +6696,7 @@ func (q *sqlQuerier) UpdateChatModelConfigACLByID(ctx context.Context, arg Updat
 		&i.OrganizationID,
 		&i.GroupACL,
 		&i.UserACL,
+		&i.EffectiveContextLimit,
 	)
 	return i, err
 }
@@ -10261,6 +10270,8 @@ WHERE
             SELECT 1 FROM chat_queued_messages cqm
             WHERE cqm.chat_id = chats_expanded.id
         ))
+    OR (status = 'interrupting'::chat_status
+        AND updated_at < $1::timestamptz)
 `
 
 // Find chats that appear stuck and need recovery:
@@ -10270,6 +10281,10 @@ WHERE
 //  3. Waiting chats with a non-empty queue and stale updated_at
 //     (deferred-promote stranding when the worker dies before its
 //     post-cancel cleanup runs).
+//  4. Interrupting chats whose updated_at went stale: the interrupt
+//     can only complete on the owning worker, so a worker that dies
+//     mid-interrupt (e.g. a coderd restart) orphans the chat forever
+//     (production incident 2026-09-17).
 func (q *sqlQuerier) GetStaleChats(ctx context.Context, staleThreshold time.Time) ([]Chat, error) {
 	rows, err := q.db.QueryContext(ctx, getStaleChats, staleThreshold)
 	if err != nil {

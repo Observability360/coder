@@ -101,6 +101,7 @@ func (q *sqlQuerier) GetAuthorizedChatModelConfigs(ctx context.Context, organiza
 			&i.OrganizationID,
 			&i.GroupACL,
 			&i.UserACL,
+			&i.EffectiveContextLimit,
 		); err != nil {
 			return nil, err
 		}

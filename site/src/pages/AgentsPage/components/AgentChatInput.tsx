@@ -4,6 +4,7 @@ import {
 	ArrowUpIcon,
 	CheckIcon,
 	ChevronRightIcon,
+	MessageCircleQuestionIcon,
 	MicIcon,
 	MonitorIcon,
 	PaperclipIcon,
@@ -25,6 +26,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { Link } from "react-router";
 import { toast } from "sonner";
+import { API } from "#/api/api";
 import type { Repository } from "#/api/api";
 import { getErrorMessage } from "#/api/errors";
 import { disconnectMCPServerOAuth2 } from "#/api/queries/chats";
@@ -67,6 +69,7 @@ import { cn } from "#/utils/cn";
 import { countInvisibleCharacters } from "#/utils/invisibleUnicode";
 import { isBelowMdViewport, isMobileViewport } from "#/utils/mobile";
 import { useAudioTranscription } from "../hooks/useAudioTranscription";
+import { estimateContextUsage } from "../utils/contextEstimate";
 import { chatWidthClass, useChatFullWidth } from "../hooks/useChatFullWidth";
 import { useMCPOAuthFlow } from "../hooks/useMCPOAuthFlow";
 import { useOverflowCount } from "../hooks/useOverflowCount";
@@ -436,6 +439,19 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 				(providerCount === 0 || modelCount === 0)
 			: modelCount !== undefined && modelCount === 0);
 	const internalRef = useRef<ChatMessageInputRef>(null);
+
+	// Toolbar entry point for the "/" skills menu: inserting the slash
+	// through the editor lets SkillsTriggerPlugin open the same menu the
+	// typed trigger uses, so search/keyboard/selection behave identically.
+	const handleSkillsMenuButton = () => {
+		const input = internalRef.current;
+		if (!input) return;
+		input.focus();
+		const value = input.getValue();
+		if (value.endsWith("/")) return;
+		const needsSpace = value.length > 0 && !/\s$/.test(value);
+		input.insertText(needsSpace ? " /" : "/");
+	};
 	const [previewImage, setPreviewImage] = useState<string | null>(null);
 	const [previewText, setPreviewText] = useState<string | null>(null);
 	const [previewTextFileName, setPreviewTextFileName] = useState<string | null>(
@@ -510,6 +526,39 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 
 	const speech = useAudioTranscription();
 	const [preRecordingValue, setPreRecordingValue] = useState<string>("");
+	// "BTW" (ask without interrupting): a read-only side query answered
+	// from this local state only -- never written into chatStore or the
+	// chat's own transcript, and cleared on dismiss or on sending a real
+	// message.
+	const [btwResult, setBtwResult] =
+		useState<TypesGen.ChatSideQueryResponse | null>(null);
+	const [btwPending, setBtwPending] = useState(false);
+	const [btwError, setBtwError] = useState<string | null>(null);
+	// Live draft length for the pre-send context estimate below -- mirrors
+	// the existing invisibleCharCount pattern (derived from the same
+	// onChange content string, not a new editor subscription).
+	const [draftCharCount, setDraftCharCount] = useState(0);
+	const selectedModelOption = modelOptions.find(
+		(option) => option.id === selectedModel,
+	);
+	// Prefer effectiveContextLimit (the largest window any currently
+	// eligible target in a combo model can serve) over the raw
+	// contextLimit (the smallest target's window) so the pre-send
+	// estimate doesn't warn/overflow just because the combo's primary
+	// target is too small when a bigger target remains eligible.
+	// effectiveContextLimit is undefined for every model until the
+	// backend populates it, so this is a no-op fallback to today's
+	// behavior until then.
+	const selectedModelContextLimit =
+		selectedModelOption?.effectiveContextLimit ??
+		selectedModelOption?.contextLimit;
+	const contextEstimate = estimateContextUsage({
+		realUsage: contextUsage ?? null,
+		limitTokens: selectedModelContextLimit,
+		compressionThresholdPercent: contextUsage?.compressionThreshold,
+		draftCharCount,
+		queuedMessages,
+	});
 
 	// Unlike the old Web Speech-based hook (live word-by-word interim
 	// results, fired only WHILE isRecording), transcript here changes
@@ -887,6 +936,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		setHasContent(Boolean(content.trim()));
 		setHasFileReferences(hasRefs);
 		setInvisibleCharCount(countInvisibleCharacters(content));
+		setDraftCharCount(content.length);
 		onContentChange?.(content, serializedEditorState, hasRefs);
 	};
 
@@ -917,8 +967,88 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		hasModelOptions &&
 		hasSendableContent &&
 		!hasActiveUploads;
+	const ROUTE_PREFIX_RE = /^\/route\b\s*(.*)$/is;
+	const [routeSelectorOpen, setRouteSelectorOpen] = useState(false);
+	// /route with no argument opens the model selector; with an argument
+	// it switches directly when the query resolves to exactly one model
+	// (id, display name, or upstream model id; exact match wins over
+	// substring). Ambiguity or a miss falls back to opening the selector.
+	const handleRouteCommand = (query: string) => {
+		if (!query) {
+			setRouteSelectorOpen(true);
+			return;
+		}
+		const q = query.toLowerCase();
+		const exact = modelOptions.filter(
+			(o) =>
+				o.id.toLowerCase() === q ||
+				o.displayName.toLowerCase() === q ||
+				o.model.toLowerCase() === q,
+		);
+		const matches =
+			exact.length > 0
+				? exact
+				: modelOptions.filter((o) =>
+						`${o.id} ${o.displayName} ${o.model}`.toLowerCase().includes(q),
+					);
+		if (matches.length === 1) {
+			const target = matches[0];
+			if (target.id === selectedModel) {
+				toast.info(`${target.displayName} is already the active model`);
+				return;
+			}
+			onModelChange?.(target.id);
+			toast.success(`Model switched to ${target.displayName}`);
+			return;
+		}
+		if (matches.length === 0) {
+			toast.error(`No model matches "${query}"`);
+		} else {
+			toast.error(`"${query}" matches ${matches.length} models — be more specific`);
+		}
+		setRouteSelectorOpen(true);
+	};
+	const BTW_PREFIX_RE = /^\/btw\b\s*(.*)$/is;
+	const handleSideQuery = (question: string) => {
+		if (!chatId) {
+			return;
+		}
+		setBtwPending(true);
+		setBtwError(null);
+		void API.experimental
+			.sideQuery(chatId, { question })
+			.then((result) => {
+				setBtwResult(result);
+			})
+			.catch((err: unknown) => {
+				setBtwError(getErrorMessage(err, "Failed to get chat status."));
+			})
+			.finally(() => {
+				setBtwPending(false);
+			});
+	};
+	const handleDismissBtw = () => {
+		setBtwResult(null);
+		setBtwError(null);
+	};
 	const handleSubmit = () => {
 		const text = internalRef.current?.getValue()?.trim() ?? "";
+
+		const routeMatch = ROUTE_PREFIX_RE.exec(text);
+		if (routeMatch) {
+			handleRouteCommand((routeMatch[1] ?? "").trim());
+			internalRef.current?.clear();
+			resetPromptCycle();
+			return;
+		}
+
+		const btwMatch = BTW_PREFIX_RE.exec(text);
+		if (btwMatch && chatId) {
+			handleSideQuery(btwMatch[1] ?? "");
+			internalRef.current?.clear();
+			resetPromptCycle();
+			return;
+		}
 
 		// If the input is empty and there are queued messages,
 		// promote the first one instead of submitting.
@@ -1069,7 +1199,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		applyCycleValue(nextPrompt);
 	};
 
-	const sendButtonLabel = isEditingHistoryMessage ? "Save Edit" : "Send";
+	// A turn is already running (or interrupting): a submission here does not
+	// start immediately, it joins this chat's FIFO queue and is dispatched
+	// automatically once the current turn reaches a terminal state. This is
+	// purely a submit-time label/placeholder distinction — the send call
+	// itself, the queue, and its auto-dispatch are unchanged either way.
+	const isQueueingSubmission = isStreaming && !isEditingHistoryMessage;
+	const sendButtonLabel = isEditingHistoryMessage
+		? "Save Edit"
+		: isQueueingSubmission
+			? "Queue"
+			: "Send";
+	const effectivePlaceholder = isQueueingSubmission
+		? "Queue for after this turn..."
+		: placeholder;
 	const sendShortcutLabel =
 		sendShortcut === MODIFIER_AGENT_CHAT_SEND_SHORTCUT
 			? "Cmd/Ctrl+Enter"
@@ -1115,6 +1258,43 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							unsupportedProviderNames={unsupportedProviderNames}
 							aiGatewayDisabled={aiGatewayDisabled}
 						/>
+					)}
+				</div>
+			)}
+			{(btwResult || btwPending || btwError) && (
+				<div
+					data-testid="btw-panel"
+					className="relative z-10 mb-2 rounded-xl border border-border-default bg-surface-secondary/70 px-3 py-2 text-xs text-content-secondary"
+				>
+					<div className="flex items-start justify-between gap-2">
+						<div className="flex items-center gap-1.5 font-medium text-content-primary">
+							<MessageCircleQuestionIcon className="size-3.5" />
+							Ask without interrupting
+						</div>
+						<Button
+							type="button"
+							variant="subtle"
+							size="icon"
+							aria-label="Dismiss"
+							onClick={handleDismissBtw}
+							className="size-5 rounded text-content-secondary hover:text-content-primary"
+						>
+							<XIcon className="size-3" />
+						</Button>
+					</div>
+					{btwPending && (
+						<div className="mt-1 flex items-center gap-1.5">
+							<Spinner size="sm" loading aria-hidden="true" />
+							Checking…
+						</div>
+					)}
+					{btwError && !btwPending && (
+						<p className="mt-1 text-content-destructive">{btwError}</p>
+					)}
+					{btwResult && !btwPending && !btwError && (
+						<p className="mt-1 whitespace-pre-line text-content-primary">
+							{btwResult.answer}
+						</p>
 					)}
 				</div>
 			)}
@@ -1171,7 +1351,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 					onPaste={resetPromptCycle}
 					aria-label="Chat message"
 					className="min-h-[60px] sm:min-h-24 w-full resize-none bg-transparent px-3 py-2 font-sans text-[13px] leading-relaxed text-content-primary placeholder:text-content-secondary disabled:cursor-not-allowed disabled:opacity-70"
-					placeholder={placeholder}
+					placeholder={effectivePlaceholder}
 					initialValue={initialValue}
 					initialEditorState={initialEditorState}
 					remountKey={remountKey}
@@ -1344,7 +1524,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 														sideOffset={8}
 														className="w-64 p-0"
 													>
-														<WorkspacePickerList
+														<RepositoryWorkspacePickerList
 															workspaceOptions={workspaceOptions}
 															selectedWorkspaceId={selectedWorkspaceId}
 															chatOrganizationId={chatOrganizationId}
@@ -1445,6 +1625,8 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							<ModelSelector
 								value={selectedModel}
 								onValueChange={onModelChange}
+								open={routeSelectorOpen}
+								onOpenChange={setRouteSelectorOpen}
 								options={modelOptions}
 								disabled={isDisabled}
 								placeholder={modelSelectorPlaceholder}
@@ -1607,9 +1789,19 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								</PopoverContent>
 							</Popover>
 						</div>
+						<button
+							type="button"
+							onClick={handleSkillsMenuButton}
+							disabled={isDisabled || isLoading}
+							aria-label="Tools: skills and commands"
+							title="Tools: skills and commands (/)"
+							className="inline-flex h-6 shrink-0 cursor-pointer items-center rounded-full border-0 bg-surface-secondary px-2.5 text-xs font-medium text-content-secondary transition-colors hover:bg-surface-tertiary hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-70"
+						>
+							Tools
+						</button>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
-						{speech.isSupported && !isStreaming && (
+						{speech.isSupported && (
 							<>
 								<Button
 									type="button"
@@ -1657,14 +1849,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							<div
 								className={cn(
 									"flex",
-									speech.isSupported &&
-										!isStreaming &&
-										!speech.error &&
-										"-ml-2",
+									speech.isSupported && !speech.error && "-ml-2",
 								)}
 							>
 								<ContextUsageIndicator
-									usage={contextUsage}
+									usage={
+										contextEstimate
+											? {
+													...(contextUsage ?? {}),
+													usedTokens: contextEstimate.usedTokens,
+													contextLimitTokens: contextEstimate.limitTokens,
+													isEstimated: contextEstimate.isEstimated,
+												}
+											: contextUsage
+									}
 									onRefreshContext={onRefreshContext}
 									isRefreshingContext={isRefreshingContext}
 								/>
@@ -1697,12 +1895,50 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								Interrupting. Waiting for the agent to stop.
 							</span>
 						)}
-						{!isStreaming && (
+						{isStreaming && chatId && (
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<Button
 										size="icon"
-										variant="default"
+										variant="subtle"
+										className="size-7 rounded-full transition-colors [&>svg]:!size-3 [&>svg]:p-0"
+										onClick={() => {
+											// The button asks whatever is typed (an optional
+											// /btw prefix included); empty input asks for the
+											// plain status snapshot.
+											const text =
+												internalRef.current?.getValue()?.trim() ?? "";
+											const question =
+												BTW_PREFIX_RE.exec(text)?.[1]?.trim() ?? text;
+											handleSideQuery(question);
+											if (question) {
+												internalRef.current?.clear();
+												resetPromptCycle();
+											}
+										}}
+										disabled={btwPending}
+									>
+										{btwPending ? (
+											<Spinner size="sm" loading aria-hidden="true" />
+										) : (
+											<MessageCircleQuestionIcon />
+										)}
+										<span className="sr-only">Ask without interrupting</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="top">Ask without interrupting</TooltipContent>
+							</Tooltip>
+						)}
+						{/* Voice input (above) and submission (below) both stay available
+							while streaming: a turn already running still accepts a new
+							prompt -- recorded or typed -- it just joins the queue instead
+							of starting immediately, so this button stays alongside Stop. */}
+						{(!isStreaming || isQueueingSubmission) && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										size="icon"
+										variant={isQueueingSubmission ? "subtle" : "default"}
 										className="size-7 rounded-full transition-colors [&>svg]:!size-5 [&>svg]:p-0"
 										onClick={
 											speech.isRecording ? handleAcceptRecording : handleSubmit
@@ -1884,6 +2120,15 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 	const catalogQuery = useQuery(repositoryCatalog(true));
 	const attachMutation = useMutation(attachRepositoryWorkspace(queryClient));
 	const [attachingRepoId, setAttachingRepoId] = useState<number | null>(null);
+	// Repositories is the default so every existing repository-catalog flow
+	// (and the tests covering it) is unaffected. "Existing workspaces" is an
+	// explicit opt-in for workspaces that intentionally aren't modeled around
+	// a single repo (e.g. a multi-repo administrative workspace) and so never
+	// show up in the repository-driven list above, no matter how the
+	// catalog is configured.
+	const [activeTab, setActiveTab] = useState<"repositories" | "workspaces">(
+		"repositories",
+	);
 
 	const notConfigured =
 		isAxiosError(catalogQuery.error) &&
@@ -1930,6 +2175,11 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 			return;
 		}
 		setAttachingRepoId(repo.id);
+		// No try/finally here on purpose: the React Compiler (enabled for this
+		// directory, see scripts/check-compiler.mjs) cannot yet lower a
+		// TryStatement with a finalizer. Both the success and error paths
+		// already fall through to the same setAttachingRepoId(null) below,
+		// so this is behaviorally identical to a finally block.
 		try {
 			const result = await attachMutation.mutateAsync({
 				owner: repo.owner,
@@ -1943,52 +2193,85 @@ export const RepositoryWorkspacePickerList: FC<WorkspacePickerListProps> = ({
 					`Failed to create a workspace for ${repo.full_name}.`,
 				),
 			);
-		} finally {
-			setAttachingRepoId(null);
 		}
+		setAttachingRepoId(null);
 	};
 
 	return (
-		<Command loop>
-			<CommandInput placeholder="Search repositories..." className="text-xs" />
-			<CommandList>
-				<CommandEmpty className="text-xs">No repositories found</CommandEmpty>
-				<CommandGroup>
-					{repositories.map((repo) => {
-						const isAttached = repo.workspace_id === selectedWorkspaceId;
-						const isAttaching = attachingRepoId === repo.id;
-						const statusLabel = isAttached
-							? "Attached"
-							: repo.workspace_id
-								? "Ready"
-								: "Not created";
+		<div className="flex flex-col">
+			<div className="flex gap-1 border-b border-border-default p-1">
+				<Button
+					size="xs"
+					variant={activeTab === "repositories" ? "outline" : "subtle"}
+					className="flex-1"
+					onClick={() => setActiveTab("repositories")}
+				>
+					Repositories
+				</Button>
+				<Button
+					size="xs"
+					variant={activeTab === "workspaces" ? "outline" : "subtle"}
+					className="flex-1"
+					onClick={() => setActiveTab("workspaces")}
+				>
+					Existing workspaces
+				</Button>
+			</div>
+			{activeTab === "workspaces" ? (
+				<WorkspacePickerList
+					workspaceOptions={workspaceOptions}
+					selectedWorkspaceId={selectedWorkspaceId}
+					chatOrganizationId={chatOrganizationId}
+					onSelect={onSelect}
+				/>
+			) : (
+				<Command loop>
+					<CommandInput
+						placeholder="Search repositories..."
+						className="text-xs"
+					/>
+					<CommandList>
+						<CommandEmpty className="text-xs">
+							No repositories found
+						</CommandEmpty>
+						<CommandGroup>
+							{repositories.map((repo) => {
+								const isAttached = repo.workspace_id === selectedWorkspaceId;
+								const isAttaching = attachingRepoId === repo.id;
+								const statusLabel = isAttached
+									? "Attached"
+									: repo.workspace_id
+										? "Ready"
+										: "Not created";
 
-						return (
-							<CommandItem
-								className="text-xs font-normal"
-								key={repo.id}
-								value={repo.name}
-								disabled={isAttaching}
-								onSelect={() => {
-									void handleSelectRepository(repo);
-								}}
-							>
-								<span className="min-w-0 flex-1 truncate">{repo.name}</span>
-								{isAttaching ? (
-									<Spinner loading className="size-3 shrink-0" />
-								) : (
-									<span className="shrink-0 text-content-secondary">
-										{statusLabel}
-									</span>
-								)}
-								{isAttached && (
-									<CheckIcon className="ml-auto size-icon-sm shrink-0" />
-								)}
-							</CommandItem>
-						);
-					})}
-				</CommandGroup>
-			</CommandList>
-		</Command>
+								return (
+									<CommandItem
+										className="text-xs font-normal"
+										key={repo.id}
+										value={repo.name}
+										disabled={isAttaching}
+										onSelect={() => {
+											void handleSelectRepository(repo);
+										}}
+									>
+										<span className="min-w-0 flex-1 truncate">{repo.name}</span>
+										{isAttaching ? (
+											<Spinner loading className="size-3 shrink-0" />
+										) : (
+											<span className="shrink-0 text-content-secondary">
+												{statusLabel}
+											</span>
+										)}
+										{isAttached && (
+											<CheckIcon className="ml-auto size-icon-sm shrink-0" />
+										)}
+									</CommandItem>
+								);
+							})}
+						</CommandGroup>
+					</CommandList>
+				</Command>
+			)}
+		</div>
 	);
 };

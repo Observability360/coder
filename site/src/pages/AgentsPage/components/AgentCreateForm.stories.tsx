@@ -1,4 +1,5 @@
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
+import { AxiosError, type AxiosResponse } from "axios";
 import { delay } from "msw";
 import { type ComponentProps, useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQueryClient } from "react-query";
@@ -871,6 +872,17 @@ const mockWorkspaces = [
 	},
 ];
 
+// These stories exercise the plain workspace list (workspaceOptions passed
+// directly, no repository-catalog org/token configured), so the "Attach
+// workspace" picker's catalog lookup must fall back to it. Without this
+// mock the picker's query has nothing to intercept it and falls through to
+// a real, unmocked network call.
+function mockRepositoryCatalogNotConfigured() {
+	const notFound = new AxiosError("Not Found");
+	notFound.response = { status: 404 } as AxiosResponse;
+	spyOn(API, "getRepositoryCatalog").mockRejectedValue(notFound);
+}
+
 export const WithWorkspaces: Story = {
 	args: {
 		workspaceOptions: mockWorkspaces,
@@ -878,6 +890,7 @@ export const WithWorkspaces: Story = {
 	},
 	beforeEach: () => {
 		localStorage.clear();
+		mockRepositoryCatalogNotConfigured();
 	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
@@ -904,6 +917,7 @@ export const SearchWorkspaces: Story = {
 	},
 	beforeEach: () => {
 		localStorage.clear();
+		mockRepositoryCatalogNotConfigured();
 	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
@@ -919,7 +933,9 @@ export const SearchWorkspaces: Story = {
 		);
 
 		// Type in the search input to filter workspaces.
-		const searchInput = body.getByPlaceholderText("Search workspaces...");
+		const searchInput = await body.findByPlaceholderText(
+			"Search workspaces...",
+		);
 		await userEvent.type(searchInput, "backend");
 
 		// Only the matching workspace should remain visible.
@@ -942,6 +958,7 @@ export const SelectWorkspaceViaSearch: Story = {
 	},
 	beforeEach: () => {
 		localStorage.clear();
+		mockRepositoryCatalogNotConfigured();
 	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
@@ -957,7 +974,9 @@ export const SelectWorkspaceViaSearch: Story = {
 		);
 
 		// Search for "backend" and select the result.
-		const searchInput = body.getByPlaceholderText("Search workspaces...");
+		const searchInput = await body.findByPlaceholderText(
+			"Search workspaces...",
+		);
 		await userEvent.type(searchInput, "backend");
 
 		await waitFor(() => {

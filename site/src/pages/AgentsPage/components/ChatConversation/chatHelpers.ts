@@ -57,7 +57,7 @@ export const getLatestContextUsage = (
 		}
 
 		const usage = extractContextUsageFromMessage(message);
-		if (usage) {
+		if (usage && typeof usage.usedTokens === "number" && usage.usedTokens > 0) {
 			return usage;
 		}
 	}

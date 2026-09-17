@@ -130,12 +130,16 @@ func TestGenerateCompaction_RecordsRuntime(t *testing.T) {
 	model := &chattest.FakeModel{
 		ProviderName: "test-provider",
 		ModelName:    "test-model",
-		GenerateFn: func(_ context.Context, _ fantasy.Call) (*fantasy.Response, error) {
-			clock.Advance(1500 * time.Millisecond)
-			return &fantasy.Response{
-				Content: []fantasy.Content{
-					fantasy.TextContent{Text: "summary"},
-				},
+		StreamFn: func(_ context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
+			return func(yield func(fantasy.StreamPart) bool) {
+				if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t"}) {
+					return
+				}
+				clock.Advance(1500 * time.Millisecond)
+				if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t", Delta: "summary"}) {
+					return
+				}
+				yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t"})
 			}, nil
 		},
 	}

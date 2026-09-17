@@ -35,6 +35,16 @@ export interface ModelSelectorOption {
 	model: string;
 	displayName: string;
 	contextLimit?: number;
+	// Coder-UX-package context-capacity fix: for a combo model (e.g.
+	// o360-coding) whose targets have different context windows,
+	// contextLimit alone is the SMALLEST target's window (the safe
+	// external-facing number). effectiveContextLimit is the largest
+	// window any currently eligible target in the combo can actually
+	// serve, so the pre-send estimate doesn't warn/overflow just because
+	// the primary target is too small when a bigger target remains
+	// eligible. Optional and defaults to contextLimit everywhere it isn't
+	// populated yet -- zero behavior change for non-combo models.
+	effectiveContextLimit?: number;
 	reasoningEffortDefault?: string;
 	reasoningEfforts?: readonly string[];
 }
@@ -66,6 +76,13 @@ interface ModelSelectorProps {
 	enableMobileFullWidthDropdown?: boolean;
 	reasoningEffort?: string;
 	onReasoningEffortChange?: (value: string) => void;
+	/**
+	 * Optional controlled open state so callers can open the selector
+	 * programmatically (e.g. the /route chat command). Omit both for the
+	 * default uncontrolled behavior.
+	 */
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 }
 
 export const formatContextLimit = (tokens: number): string => {
@@ -111,14 +128,18 @@ export const ModelSelector: FC<ModelSelectorProps> = ({
 	enableMobileFullWidthDropdown = false,
 	reasoningEffort,
 	onReasoningEffortChange,
+	open: controlledOpen,
+	onOpenChange,
 }) => {
-	const [open, setOpen] = useState(false);
+	const [internalOpen, setInternalOpen] = useState(false);
+	const open = controlledOpen ?? internalOpen;
 	const [search, setSearch] = useState("");
 	const handleOpenChange = (nextOpen: boolean) => {
 		if (!nextOpen) {
 			setSearch("");
 		}
-		setOpen(nextOpen);
+		setInternalOpen(nextOpen);
+		onOpenChange?.(nextOpen);
 	};
 	const selectedModel = options.find((option) => option.id === value);
 	const triggerLabel = selectedModel?.displayName ?? placeholder;

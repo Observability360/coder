@@ -250,6 +250,13 @@ export const getModelOptionsFromModels = (
 
 		const displayName = model.display_name.trim() || modelName;
 		const contextLimit = asNumber(model.context_limit);
+		// A combo/route-backed model (e.g. an OmniRoute combo) can have a
+		// larger real capacity than its context_limit column, which only
+		// reflects the smallest/first configured target. effective_context_limit
+		// is an optional, provider-sourced override (never hardcoded here) --
+		// undefined for every plain single-model config, where context_limit
+		// alone is already correct.
+		const effectiveContextLimit = asNumber(model.effective_context_limit);
 		const reasoningEffort = model.model_config?.reasoning_effort;
 		const reasoningEffortDefault = asString(reasoningEffort?.default).trim();
 		const reasoningEfforts = model.reasoning_efforts ?? [];
@@ -262,6 +269,7 @@ export const getModelOptionsFromModels = (
 			model: modelName,
 			displayName,
 			...(contextLimit !== undefined ? { contextLimit } : {}),
+			...(effectiveContextLimit !== undefined ? { effectiveContextLimit } : {}),
 			...(reasoningEffortDefault ? { reasoningEffortDefault } : {}),
 			...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
 		});

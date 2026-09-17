@@ -271,6 +271,17 @@ func applyCancelRequiresAction(t *testing.T, _ *testFixture, tx *chatstate.Tx, _
 	return err
 }
 
+func applyNotifyChildTerminal(t *testing.T, _ *testFixture, tx *chatstate.Tx, _ seededChat, _ chatstate.ExecutionState, result *transitionCaseResult) error {
+	t.Helper()
+	var err error
+	result.notifyChildTerminal, err = tx.NotifyChildTerminal(chatstate.NotifyChildTerminalInput{
+		ChildChatID:   uuid.New(),
+		ChildTitle:    "matrix-test-child",
+		ChildTerminal: "completed",
+	})
+	return err
+}
+
 func applyReconcileInvalidState(t *testing.T, _ *testFixture, tx *chatstate.Tx, _ seededChat, _ chatstate.ExecutionState, result *transitionCaseResult) error {
 	t.Helper()
 	var err error
@@ -317,6 +328,8 @@ func defaultApplier(tr chatstate.Transition) applierFn {
 		return applyCancelRequiresAction
 	case chatstate.TransitionReconcileInvalidState:
 		return applyReconcileInvalidState
+	case chatstate.TransitionNotifyChildTerminal:
+		return applyNotifyChildTerminal
 	}
 	return nil
 }
@@ -356,6 +369,7 @@ type transitionCaseResult struct {
 	finishError             chatstate.FinishErrorResult
 	cancelRequiresAction    chatstate.CancelRequiresActionResult
 	reconcileInvalidState   chatstate.ReconcileInvalidStateResult
+	notifyChildTerminal     chatstate.NotifyChildTerminalResult
 }
 
 type applierFn func(t *testing.T, f *testFixture, tx *chatstate.Tx, seeded seededChat, from chatstate.ExecutionState, result *transitionCaseResult) error
@@ -792,6 +806,14 @@ func matrixCases() []transitionCaseSpec {
 		requestCompactionCase(chatstate.StateW, chatstate.StateR0),
 		requestCompactionCase(chatstate.StateE0, chatstate.StateR0),
 		requestCompactionCase(chatstate.StateE1, chatstate.StateR1),
+
+		// NotifyChildTerminal cases: a subagent reaching a terminal state
+		// (waiting = completed, error = failed) wakes an idle parent the
+		// same way SendMessage/RequestCompaction do. Legal only from the
+		// two idle states -- a busy parent (R*/I*/A*/E1) observes the
+		// child's fresh status on its own next turn instead.
+		notifyChildTerminalCase(chatstate.StateW, chatstate.StateR0),
+		notifyChildTerminalCase(chatstate.StateE0, chatstate.StateR0),
 
 		// DeleteQueuedMessage cases. Empty-tail want collapses the
 		// classified state (E1->E0, R1->R0, I1->I0, A1->A0). The
@@ -1826,6 +1848,28 @@ func finishTurnCase(from, want chatstate.ExecutionState, shape queueShape) trans
 		}
 	}
 	return spec
+}
+
+func notifyChildTerminalCase(from, want chatstate.ExecutionState) transitionCaseSpec {
+	return transitionCaseSpec{
+		transition: chatstate.TransitionNotifyChildTerminal,
+		from:       from,
+		want:       want,
+		apply:      applyNotifyChildTerminal,
+		assert: func(ctx context.Context, t *testing.T, f *testFixture, seeded seededChat, base snapshotBaseline, result transitionCaseResult) {
+			after, err := f.DB.GetChatByID(ctx, seeded.chatID)
+			require.NoError(t, err)
+			require.Equal(t, database.ChatStatusRunning, after.Status,
+				"NotifyChildTerminal resumes the parent into running")
+			require.False(t, after.LastError.Valid,
+				"NotifyChildTerminal clears last_error")
+			require.Len(t, result.notifyChildTerminal.InsertedMessages, 1,
+				"NotifyChildTerminal inserts exactly one system notice")
+			require.Equal(t, database.ChatMessageRoleSystem, result.notifyChildTerminal.InsertedMessages[0].Role)
+			require.Equal(t, database.ChatStatusRunning, result.notifyChildTerminal.Chat.Status,
+				"NotifyChildTerminal's result carries the post-transition parent row")
+		},
+	}
 }
 
 func finishErrorCase(from, want chatstate.ExecutionState) transitionCaseSpec {

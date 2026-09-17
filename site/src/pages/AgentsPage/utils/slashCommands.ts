@@ -19,8 +19,22 @@ export const COMPACT_SLASH_COMMAND: ChatSlashCommand = {
  * Commands available in the main chat composer. Editing an existing
  * message and the new-agent form do not offer commands.
  */
+export const BTW_SLASH_COMMAND: ChatSlashCommand = {
+	name: "btw",
+	description:
+		"Ask a side question about this chat without interrupting the agent",
+};
+
+export const ROUTE_SLASH_COMMAND: ChatSlashCommand = {
+	name: "route",
+	description:
+		"Switch the chat model: /route opens the model list, /route <model> switches directly",
+};
+
 export const CHAT_SLASH_COMMANDS: readonly ChatSlashCommand[] = [
 	COMPACT_SLASH_COMMAND,
+	BTW_SLASH_COMMAND,
+	ROUTE_SLASH_COMMAND,
 ];
 
 type ChatSlashCommandResolution = "pending" | "available" | "unavailable";
