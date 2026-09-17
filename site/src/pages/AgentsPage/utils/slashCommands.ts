@@ -25,9 +25,16 @@ export const BTW_SLASH_COMMAND: ChatSlashCommand = {
 		"Ask a side question about this chat without interrupting the agent",
 };
 
+export const ROUTE_SLASH_COMMAND: ChatSlashCommand = {
+	name: "route",
+	description:
+		"Switch the chat model: /route opens the model list, /route <model> switches directly",
+};
+
 export const CHAT_SLASH_COMMANDS: readonly ChatSlashCommand[] = [
 	COMPACT_SLASH_COMMAND,
 	BTW_SLASH_COMMAND,
+	ROUTE_SLASH_COMMAND,
 ];
 
 type ChatSlashCommandResolution = "pending" | "available" | "unavailable";
