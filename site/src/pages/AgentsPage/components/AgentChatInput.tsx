@@ -1902,7 +1902,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 										size="icon"
 										variant="subtle"
 										className="size-7 rounded-full transition-colors [&>svg]:!size-3 [&>svg]:p-0"
-										onClick={() => handleSideQuery("")}
+										onClick={() => {
+											// The button asks whatever is typed (an optional
+											// /btw prefix included); empty input asks for the
+											// plain status snapshot.
+											const text =
+												internalRef.current?.getValue()?.trim() ?? "";
+											const question =
+												BTW_PREFIX_RE.exec(text)?.[1]?.trim() ?? text;
+											handleSideQuery(question);
+											if (question) {
+												internalRef.current?.clear();
+												resetPromptCycle();
+											}
+										}}
 										disabled={btwPending}
 									>
 										{btwPending ? (
