@@ -76,6 +76,13 @@ interface ModelSelectorProps {
 	enableMobileFullWidthDropdown?: boolean;
 	reasoningEffort?: string;
 	onReasoningEffortChange?: (value: string) => void;
+	/**
+	 * Optional controlled open state so callers can open the selector
+	 * programmatically (e.g. the /route chat command). Omit both for the
+	 * default uncontrolled behavior.
+	 */
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 }
 
 export const formatContextLimit = (tokens: number): string => {
@@ -121,14 +128,18 @@ export const ModelSelector: FC<ModelSelectorProps> = ({
 	enableMobileFullWidthDropdown = false,
 	reasoningEffort,
 	onReasoningEffortChange,
+	open: controlledOpen,
+	onOpenChange,
 }) => {
-	const [open, setOpen] = useState(false);
+	const [internalOpen, setInternalOpen] = useState(false);
+	const open = controlledOpen ?? internalOpen;
 	const [search, setSearch] = useState("");
 	const handleOpenChange = (nextOpen: boolean) => {
 		if (!nextOpen) {
 			setSearch("");
 		}
-		setOpen(nextOpen);
+		setInternalOpen(nextOpen);
+		onOpenChange?.(nextOpen);
 	};
 	const selectedModel = options.find((option) => option.id === value);
 	const triggerLabel = selectedModel?.displayName ?? placeholder;

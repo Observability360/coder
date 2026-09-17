@@ -967,6 +967,47 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		hasModelOptions &&
 		hasSendableContent &&
 		!hasActiveUploads;
+	const ROUTE_PREFIX_RE = /^\/route\b\s*(.*)$/is;
+	const [routeSelectorOpen, setRouteSelectorOpen] = useState(false);
+	// /route with no argument opens the model selector; with an argument
+	// it switches directly when the query resolves to exactly one model
+	// (id, display name, or upstream model id; exact match wins over
+	// substring). Ambiguity or a miss falls back to opening the selector.
+	const handleRouteCommand = (query: string) => {
+		if (!query) {
+			setRouteSelectorOpen(true);
+			return;
+		}
+		const q = query.toLowerCase();
+		const exact = modelOptions.filter(
+			(o) =>
+				o.id.toLowerCase() === q ||
+				o.displayName.toLowerCase() === q ||
+				o.model.toLowerCase() === q,
+		);
+		const matches =
+			exact.length > 0
+				? exact
+				: modelOptions.filter((o) =>
+						`${o.id} ${o.displayName} ${o.model}`.toLowerCase().includes(q),
+					);
+		if (matches.length === 1) {
+			const target = matches[0];
+			if (target.id === selectedModel) {
+				toast.info(`${target.displayName} is already the active model`);
+				return;
+			}
+			onModelChange?.(target.id);
+			toast.success(`Model switched to ${target.displayName}`);
+			return;
+		}
+		if (matches.length === 0) {
+			toast.error(`No model matches "${query}"`);
+		} else {
+			toast.error(`"${query}" matches ${matches.length} models — be more specific`);
+		}
+		setRouteSelectorOpen(true);
+	};
 	const BTW_PREFIX_RE = /^\/btw\b\s*(.*)$/is;
 	const handleSideQuery = (question: string) => {
 		if (!chatId) {
@@ -992,6 +1033,14 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 	};
 	const handleSubmit = () => {
 		const text = internalRef.current?.getValue()?.trim() ?? "";
+
+		const routeMatch = ROUTE_PREFIX_RE.exec(text);
+		if (routeMatch) {
+			handleRouteCommand((routeMatch[1] ?? "").trim());
+			internalRef.current?.clear();
+			resetPromptCycle();
+			return;
+		}
 
 		const btwMatch = BTW_PREFIX_RE.exec(text);
 		if (btwMatch && chatId) {
@@ -1576,6 +1625,8 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							<ModelSelector
 								value={selectedModel}
 								onValueChange={onModelChange}
+								open={routeSelectorOpen}
+								onOpenChange={setRouteSelectorOpen}
 								options={modelOptions}
 								disabled={isDisabled}
 								placeholder={modelSelectorPlaceholder}
