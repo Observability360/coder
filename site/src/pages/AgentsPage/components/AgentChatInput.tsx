@@ -12,7 +12,6 @@ import {
 	PlusIcon,
 	ServerIcon,
 	SquareIcon,
-	SquareSlashIcon,
 	UnlinkIcon,
 	XIcon,
 } from "lucide-react";
@@ -1739,18 +1738,16 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								</PopoverContent>
 							</Popover>
 						</div>
-						<Button
+						<button
 							type="button"
-							variant="subtle"
-							size="icon"
-							className="size-7 shrink-0 rounded-full [&>svg]:!size-icon-sm [&>svg]:p-0"
 							onClick={handleSkillsMenuButton}
 							disabled={isDisabled || isLoading}
-							aria-label="Skills and commands"
-							title="Skills and commands (/)"
+							aria-label="Tools: skills and commands"
+							title="Tools: skills and commands (/)"
+							className="inline-flex h-6 shrink-0 cursor-pointer items-center rounded-full border-0 bg-surface-secondary px-2.5 text-xs font-medium text-content-secondary transition-colors hover:bg-surface-tertiary hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-70"
 						>
-							<SquareSlashIcon strokeWidth={1.5} />
-						</Button>
+							Tools
+						</button>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
 						{speech.isSupported && (
