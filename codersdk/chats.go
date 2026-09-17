@@ -663,6 +663,39 @@ type CreateChatMessageResponse struct {
 	Warnings      []string           `json:"warnings,omitempty"`
 }
 
+// ChatSideQueryRequest is the request for POST /api/v2/chats/{chat}/side-query
+// ("BTW" -- ask a running chat what it's doing without interrupting it).
+type ChatSideQueryRequest struct {
+	// Question is free text, e.g. "what are you doing right now?". An empty
+	// question requests a plain status summary.
+	Question string `json:"question"`
+}
+
+// ChatSideQuerySnapshot is the read-only snapshot of a chat's current
+// activity a side-query answer is grounded in.
+type ChatSideQuerySnapshot struct {
+	Status             ChatStatus `json:"status"`
+	IsRunning          bool       `json:"is_running"`
+	RunningForSeconds  int64      `json:"running_for_seconds,omitempty"`
+	CurrentActivity    string     `json:"current_activity,omitempty"`
+	SubagentsRunning   int        `json:"subagents_running"`
+	SubagentsCompleted int        `json:"subagents_completed"`
+	QueuedCount        int64      `json:"queued_count"`
+	IsRetrying         bool       `json:"is_retrying"`
+	GenerationAttempt  int64      `json:"generation_attempt"`
+}
+
+// ChatSideQueryResponse is the response from a BTW side-query. It is never
+// added to the chat's own message history.
+type ChatSideQueryResponse struct {
+	Answer string `json:"answer"`
+	// Source is "snapshot" when Answer came directly from the structured
+	// snapshot, or "llm" when an isolated interpretive model call produced
+	// it.
+	Source   string                `json:"source" enums:"snapshot,llm"`
+	Snapshot ChatSideQuerySnapshot `json:"snapshot"`
+}
+
 // EditChatMessageResponse is the response from editing a message in a chat.
 type EditChatMessageResponse struct {
 	Message ChatMessage `json:"message"`
@@ -1306,8 +1339,14 @@ type ChatModel struct {
 	Enabled              bool                 `json:"enabled"`
 	IsDefault            bool                 `json:"is_default"`
 	ContextLimit         int64                `json:"context_limit"`
-	CompressionThreshold int32                `json:"compression_threshold"`
-	ModelConfig          *ChatModelCallConfig `json:"model_config,omitempty"`
+	// EffectiveContextLimit overrides ContextLimit for combo/route-backed
+	// models whose real capacity (the largest currently-eligible target)
+	// exceeds the smallest/first target ContextLimit reflects. Sourced
+	// from the upstream provider (e.g. OmniRoute's own model catalog),
+	// never hardcoded here. Absent means "use ContextLimit".
+	EffectiveContextLimit *int64               `json:"effective_context_limit,omitempty"`
+	CompressionThreshold  int32                `json:"compression_threshold"`
+	ModelConfig           *ChatModelCallConfig `json:"model_config,omitempty"`
 	// ReasoningEfforts lists selectable reasoning effort values through
 	// the model's configured maximum.
 	ReasoningEfforts []string  `json:"reasoning_efforts,omitempty"`

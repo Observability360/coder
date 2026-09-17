@@ -31,6 +31,7 @@ import { cn } from "#/utils/cn";
 import { formatKiB } from "#/utils/fileSize";
 import { isMobileViewport } from "#/utils/mobile";
 import { getPathBasename, getPathDirname } from "../utils/path";
+import { resolveWarningLevel } from "../utils/contextEstimate";
 import { SvgRingProgress } from "./SvgRingProgress";
 
 export interface AgentContextUsage {
@@ -43,6 +44,11 @@ export interface AgentContextUsage {
 	readonly reasoningTokens?: number;
 	// Percentage (0-100) at which the context will be compacted.
 	readonly compressionThreshold?: number;
+	// True when usedTokens/contextLimitTokens include a chars/4 estimate for
+	// a draft or queued message not yet reflected in a real, completed-turn
+	// usage report (see utils/contextEstimate.ts). Never true for a number
+	// that is 100% real.
+	readonly isEstimated?: boolean;
 	// Pinned workspace-context state: the resources the chat is built from and
 	// whether they have drifted from the agent's latest snapshot.
 	readonly context?: ChatContext;
@@ -128,17 +134,21 @@ const SectionSize: FC<{ bytes: number }> = ({ bytes }) =>
 		</span>
 	) : null;
 
-const getIndicatorToneClassName = (percentUsed: number | null): string => {
+const getIndicatorToneClassName = (
+	percentUsed: number | null,
+	compressionThreshold: number | undefined,
+): string => {
 	if (percentUsed === null) {
 		return "text-content-secondary";
 	}
-	if (percentUsed >= 95) {
-		return "text-content-destructive";
+	switch (resolveWarningLevel(percentUsed, compressionThreshold)) {
+		case "overflow":
+			return "text-content-destructive";
+		case "warning":
+			return "text-content-warning";
+		default:
+			return "text-content-secondary";
 	}
-	if (percentUsed >= 85) {
-		return "text-content-warning";
-	}
-	return "text-content-secondary";
 };
 
 // A set of context resources that share a parent directory. Lists are grouped
@@ -353,7 +363,7 @@ export const ContextUsageIndicator: FC<{
 		? "text-content-destructive"
 		: isDirty || hasResourceIssues
 			? "text-content-warning"
-			: getIndicatorToneClassName(percentUsed);
+			: getIndicatorToneClassName(percentUsed, usage?.compressionThreshold);
 	const fileBytes = sumResourceBytes(pinnedResources ?? [], [
 		"instruction_file",
 	]);
@@ -374,8 +384,9 @@ export const ContextUsageIndicator: FC<{
 		hasResourceIssues ? "Some context resources failed to load." : "",
 	].filter((note) => note !== "");
 	const statusNote = statusNotes.length > 0 ? ` ${statusNotes.join(" ")}` : "";
+	const estimatedNote = usage?.isEstimated ? " (estimated, includes unsent text)" : "";
 	const ariaLabel = hasPercent
-		? `Context usage ${percentLabel}. ${formatTokenCount(usedTokens)} of ${formatTokenCount(contextLimitTokens)} tokens used.${statusNote}`
+		? `Context usage ${percentLabel}. ${formatTokenCount(usedTokens)} of ${formatTokenCount(contextLimitTokens)} tokens used${estimatedNote}.${statusNote}`
 		: statusNote !== ""
 			? `Context usage.${statusNote}`
 			: "Context usage";
@@ -383,7 +394,7 @@ export const ContextUsageIndicator: FC<{
 	const panelContent = (
 		<div className="text-xs text-content-primary">
 			{hasPercent
-				? `${percentLabel} - ${formatTokenCountCompact(usedTokens)} / ${formatTokenCountCompact(contextLimitTokens)} context used`
+				? `${percentLabel} - ${formatTokenCountCompact(usedTokens)} / ${formatTokenCountCompact(contextLimitTokens)} context used${usage?.isEstimated ? " (estimated)" : ""}`
 				: hasReportedUsage
 					? "Context usage unavailable"
 					: "Context usage will appear after sending a message."}

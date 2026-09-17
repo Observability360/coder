@@ -2097,12 +2097,15 @@ CREATE TABLE chat_model_configs (
     organization_id uuid NOT NULL,
     group_acl jsonb DEFAULT '{}'::jsonb NOT NULL,
     user_acl jsonb DEFAULT '{}'::jsonb NOT NULL,
+    effective_context_limit bigint,
     CONSTRAINT chat_model_configs_ai_provider_required_when_active CHECK (((deleted = true) OR (ai_provider_id IS NOT NULL))),
     CONSTRAINT chat_model_configs_compression_threshold_check CHECK (((compression_threshold >= 0) AND (compression_threshold <= 100))),
     CONSTRAINT chat_model_configs_context_limit_check CHECK ((context_limit > 0)),
     CONSTRAINT chat_model_configs_group_acl_is_object CHECK ((jsonb_typeof(group_acl) = 'object'::text)),
     CONSTRAINT chat_model_configs_user_acl_is_object CHECK ((jsonb_typeof(user_acl) = 'object'::text))
 );
+
+COMMENT ON COLUMN chat_model_configs.effective_context_limit IS 'Optional override of context_limit for combo/route-backed models whose effective capacity is larger than their first/smallest target -- sourced from the upstream provider (e.g. OmniRoute), never hardcoded. NULL falls back to context_limit.';
 
 CREATE TABLE chat_organization_model_overrides (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

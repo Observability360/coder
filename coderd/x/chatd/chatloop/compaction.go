@@ -3,6 +3,7 @@ package chatloop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -177,11 +178,12 @@ func GenerateCompaction(ctx context.Context, opts GenerateCompactionOptions) (Co
 		)
 	}
 
+	boundedMessages, _ := boundCompactionInput(opts.Messages, contextLimit)
 	summaryStart := opts.Clock.Now()
 	if opts.OnModelStreamStart != nil {
 		opts.OnModelStreamStart()
 	}
-	summary, err := generateCompactionSummary(ctx, opts.Model, opts.Messages, config)
+	summary, err := generateCompactionSummary(ctx, opts.Model, boundedMessages, config)
 	if err != nil {
 		publishCompactionError(config, "failed to generate compaction summary")
 		return CompactionResult{}, err
@@ -331,6 +333,110 @@ func shouldCompact(contextTokens, contextLimit int64, thresholdPercent int32) (f
 	return usagePercent, usagePercent >= float64(thresholdPercent)
 }
 
+const (
+	// compactionInputBudgetPercent caps the share of the model's context
+	// window the summarization input may occupy. The remainder is
+	// headroom for the summary prompt, the hook hint, and the generated
+	// summary itself.
+	compactionInputBudgetPercent = int64(75)
+	// compactionFallbackInputTokens bounds the summarization input when
+	// no context limit is known for the model.
+	compactionFallbackInputTokens = int64(120_000)
+	// compactionHeadBudgetPercent is the share of the input budget kept
+	// from the OLDEST messages (system prompt, the user's goal and
+	// standing constraints); the rest keeps the NEWEST messages (the
+	// current state of the work). The middle is dropped with a marker.
+	compactionHeadBudgetPercent = int64(25)
+	// compactionCharsPerToken is the coarse chars-per-token estimate the
+	// platform already uses for pre-send context estimates.
+	compactionCharsPerToken = int64(4)
+)
+
+// estimateCompactionMessageTokens estimates one message's token count
+// from its serialized size.
+func estimateCompactionMessageTokens(msg fantasy.Message) int64 {
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		total := 0
+		for _, part := range msg.Content {
+			if text, ok := part.(fantasy.TextPart); ok {
+				total += len(text.Text)
+			}
+		}
+		return int64(total) / compactionCharsPerToken
+	}
+	return int64(len(raw)) / compactionCharsPerToken
+}
+
+// boundCompactionInput forces the summarization input to fit within a
+// budget derived from the model's context limit. Compaction runs
+// precisely when the context is at its largest, so without this the
+// summarization request inherits the very overflow it is trying to fix
+// and can exceed what any route can serve (incident 2026-09-17: a
+// 1.6k-message chat's compaction requests failed upstream on every
+// attempt, looping for over half an hour). Keeps the oldest and newest
+// messages and drops the middle with a marker message, returning the
+// (possibly trimmed) messages and how many were omitted.
+func boundCompactionInput(messages []fantasy.Message, contextLimit int64) ([]fantasy.Message, int) {
+	if len(messages) == 0 {
+		return messages, 0
+	}
+	budget := compactionFallbackInputTokens
+	if contextLimit > 0 {
+		budget = contextLimit * compactionInputBudgetPercent / 100
+	}
+	estimates := make([]int64, len(messages))
+	total := int64(0)
+	for i, msg := range messages {
+		estimates[i] = estimateCompactionMessageTokens(msg)
+		total += estimates[i]
+	}
+	if total <= budget {
+		return messages, 0
+	}
+
+	headBudget := budget * compactionHeadBudgetPercent / 100
+	tailBudget := budget - headBudget
+
+	headEnd := 0
+	used := int64(0)
+	for headEnd < len(messages) && used+estimates[headEnd] <= headBudget {
+		used += estimates[headEnd]
+		headEnd++
+	}
+	// Always keep at least the first message (the system prompt).
+	if headEnd == 0 {
+		headEnd = 1
+	}
+	tailStart := len(messages)
+	used = 0
+	for tailStart > headEnd && used+estimates[tailStart-1] <= tailBudget {
+		used += estimates[tailStart-1]
+		tailStart--
+	}
+	// Always keep at least the last message.
+	if tailStart == len(messages) {
+		tailStart = len(messages) - 1
+	}
+	if tailStart <= headEnd {
+		return messages, 0
+	}
+
+	omitted := tailStart - headEnd
+	marker := fantasy.Message{
+		Role: fantasy.MessageRoleUser,
+		Content: []fantasy.MessagePart{fantasy.TextPart{Text: fmt.Sprintf(
+			"[compaction notice: %d earlier messages were omitted from this summarization request so it fits the model's context window. The kept messages are the oldest (goals, constraints) and the newest (current state); summarize from what is present.]",
+			omitted,
+		)}},
+	}
+	bounded := make([]fantasy.Message, 0, headEnd+1+len(messages)-tailStart)
+	bounded = append(bounded, messages[:headEnd]...)
+	bounded = append(bounded, marker)
+	bounded = append(bounded, messages[tailStart:]...)
+	return bounded, omitted
+}
+
 func startCompactionDebugRun(
 	ctx context.Context,
 	options CompactionOptions,
@@ -457,22 +563,70 @@ func generateCompactionSummary(
 
 	call := options.SummaryCall
 	call.Prompt = summaryPrompt
-	response, err := model.Generate(summaryCtx, call)
+	// Stream instead of Generate: a compaction summary over a large
+	// context can take well past a minute to produce, and a
+	// non-streaming request holds the connection silent for the whole
+	// generation. Intermediate gateways close silent connections with
+	// 504s (observed at ~60s on the OmniRoute path), which made
+	// large-context compaction structurally impossible and put chats
+	// into long retry loops. Streaming sends bytes from the first
+	// token, keeping the connection alive for however long the full
+	// summary takes.
+	stream, err := model.Stream(summaryCtx, call)
 	if err != nil {
-		return "", xerrors.Errorf("generate summary text: %w", err)
+		return "", xerrors.Errorf("open summary stream: %w", err)
 	}
-
-	parts := make([]string, 0, len(response.Content))
-	for _, block := range response.Content {
-		textBlock, ok := fantasy.AsContentType[fantasy.TextContent](block)
+	var (
+		blocks    []string
+		order     []string
+		active    = make(map[string]string)
+		streamErr error
+	)
+	flushBlock := func(id string) {
+		text, ok := active[id]
 		if !ok {
-			continue
+			return
 		}
-		text := strings.TrimSpace(textBlock.Text)
-		if text == "" {
-			continue
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			blocks = append(blocks, trimmed)
 		}
-		parts = append(parts, text)
+		delete(active, id)
+		for i, openID := range order {
+			if openID == id {
+				order = append(order[:i], order[i+1:]...)
+				break
+			}
+		}
 	}
-	return strings.TrimSpace(strings.Join(parts, " ")), nil
+	for part := range stream {
+		switch part.Type {
+		case fantasy.StreamPartTypeTextStart:
+			if _, ok := active[part.ID]; !ok {
+				active[part.ID] = ""
+				order = append(order, part.ID)
+			}
+		case fantasy.StreamPartTypeTextDelta:
+			if _, ok := active[part.ID]; !ok {
+				// Providers may emit deltas without a start part.
+				active[part.ID] = ""
+				order = append(order, part.ID)
+			}
+			active[part.ID] += part.Delta
+		case fantasy.StreamPartTypeTextEnd:
+			flushBlock(part.ID)
+		case fantasy.StreamPartTypeError:
+			streamErr = part.Error
+		}
+		if streamErr != nil {
+			break
+		}
+	}
+	if streamErr != nil {
+		return "", xerrors.Errorf("generate summary text: %w", streamErr)
+	}
+	// Flush blocks the stream ended without closing, in open order.
+	for _, id := range append([]string(nil), order...) {
+		flushBlock(id)
+	}
+	return strings.TrimSpace(strings.Join(blocks, " ")), nil
 }

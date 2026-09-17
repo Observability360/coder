@@ -524,7 +524,11 @@ func (s *taskStarter) StartGeneration(ctx context.Context, input chatWorkerTaskS
 		classified := chaterror.Classify(actionErr)
 		if classified.Retryable {
 			action := decision.kind
-			decision, err := s.recordGenerationRetry(ctx, machine, input, classified)
+			maxAttempts := int64(chatretry.MaxAttempts)
+			if action == generationActionCompact {
+				maxAttempts = compactionMaxRetryAttempts
+			}
+			decision, err := s.recordGenerationRetry(ctx, machine, input, classified, maxAttempts)
 			if err != nil {
 				return xerrors.Errorf("record generation retry: %w", err)
 			}
@@ -545,11 +549,28 @@ func (s *taskStarter) StartGeneration(ctx context.Context, input chatWorkerTaskS
 				}
 				continue
 			}
+			if action == generationActionCompact {
+				actionErr = xerrors.Errorf(
+					"context compaction failed repeatedly and its retry budget is exhausted; "+
+						"the conversation context may be too large for the current model route — "+
+						"try /compact again later, switch the chat model, or start a new chat: %w",
+					actionErr,
+				)
+			}
 			return s.finishGenerationError(ctx, machine, input, actionErr, requireGenerationAttempt(decision.generationAttempt))
 		}
 		return s.finishGenerationError(ctx, machine, input, actionErr, generationAttemptNotRequired)
 	}
 }
+
+// compactionMaxRetryAttempts caps generation retries when the failing
+// action is context compaction. Compaction attempts over a large
+// context are slow — minutes each when an upstream is timing out — so
+// the general chatretry.MaxAttempts budget would keep a chat visibly
+// stuck "Summarizing..." for hours. A few attempts ride out a
+// transient blip while failing fast, with a clear error, when the
+// route genuinely cannot serve the request (incident 2026-09-17).
+const compactionMaxRetryAttempts = int64(3)
 
 func loadGenerationState(
 	ctx context.Context,
@@ -580,11 +601,16 @@ func loadGenerationState(
 	return chat, messages, nil
 }
 
+// recordGenerationRetry persists retry state for a retryable
+// generation failure. maxAttempts bounds how many generation attempts
+// may retry; callers pass chatretry.MaxAttempts except for actions
+// with their own tighter budget (compaction).
 func (*taskStarter) recordGenerationRetry(
 	ctx context.Context,
 	machine *chatstate.ChatMachine,
 	input chatWorkerTaskStartInput,
 	classified chaterror.ClassifiedError,
+	maxAttempts int64,
 ) (generationRetryDecision, error) {
 	var decision generationRetryDecision
 	var payload *codersdk.ChatStreamRetry
@@ -594,7 +620,7 @@ func (*taskStarter) recordGenerationRetry(
 			return xerrors.Errorf("load chat for task: %w", err)
 		}
 		decision.generationAttempt = chat.GenerationAttempt
-		if chat.GenerationAttempt <= 0 || chat.GenerationAttempt >= int64(chatretry.MaxAttempts) {
+		if chat.GenerationAttempt <= 0 || chat.GenerationAttempt >= maxAttempts {
 			decision.retry = false
 			return errRetryStateDecisionOnly
 		}

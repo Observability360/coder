@@ -4,6 +4,7 @@ import {
 	ArrowUpIcon,
 	CheckIcon,
 	ChevronRightIcon,
+	MessageCircleQuestionIcon,
 	MicIcon,
 	MonitorIcon,
 	PaperclipIcon,
@@ -25,6 +26,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { Link } from "react-router";
 import { toast } from "sonner";
+import { API } from "#/api/api";
 import type { Repository } from "#/api/api";
 import { getErrorMessage } from "#/api/errors";
 import { disconnectMCPServerOAuth2 } from "#/api/queries/chats";
@@ -67,6 +69,7 @@ import { cn } from "#/utils/cn";
 import { countInvisibleCharacters } from "#/utils/invisibleUnicode";
 import { isBelowMdViewport, isMobileViewport } from "#/utils/mobile";
 import { useAudioTranscription } from "../hooks/useAudioTranscription";
+import { estimateContextUsage } from "../utils/contextEstimate";
 import { chatWidthClass, useChatFullWidth } from "../hooks/useChatFullWidth";
 import { useMCPOAuthFlow } from "../hooks/useMCPOAuthFlow";
 import { useOverflowCount } from "../hooks/useOverflowCount";
@@ -510,6 +513,39 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 
 	const speech = useAudioTranscription();
 	const [preRecordingValue, setPreRecordingValue] = useState<string>("");
+	// "BTW" (ask without interrupting): a read-only side query answered
+	// from this local state only -- never written into chatStore or the
+	// chat's own transcript, and cleared on dismiss or on sending a real
+	// message.
+	const [btwResult, setBtwResult] =
+		useState<TypesGen.ChatSideQueryResponse | null>(null);
+	const [btwPending, setBtwPending] = useState(false);
+	const [btwError, setBtwError] = useState<string | null>(null);
+	// Live draft length for the pre-send context estimate below -- mirrors
+	// the existing invisibleCharCount pattern (derived from the same
+	// onChange content string, not a new editor subscription).
+	const [draftCharCount, setDraftCharCount] = useState(0);
+	const selectedModelOption = modelOptions.find(
+		(option) => option.id === selectedModel,
+	);
+	// Prefer effectiveContextLimit (the largest window any currently
+	// eligible target in a combo model can serve) over the raw
+	// contextLimit (the smallest target's window) so the pre-send
+	// estimate doesn't warn/overflow just because the combo's primary
+	// target is too small when a bigger target remains eligible.
+	// effectiveContextLimit is undefined for every model until the
+	// backend populates it, so this is a no-op fallback to today's
+	// behavior until then.
+	const selectedModelContextLimit =
+		selectedModelOption?.effectiveContextLimit ??
+		selectedModelOption?.contextLimit;
+	const contextEstimate = estimateContextUsage({
+		realUsage: contextUsage ?? null,
+		limitTokens: selectedModelContextLimit,
+		compressionThresholdPercent: contextUsage?.compressionThreshold,
+		draftCharCount,
+		queuedMessages,
+	});
 
 	// Unlike the old Web Speech-based hook (live word-by-word interim
 	// results, fired only WHILE isRecording), transcript here changes
@@ -887,6 +923,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		setHasContent(Boolean(content.trim()));
 		setHasFileReferences(hasRefs);
 		setInvisibleCharCount(countInvisibleCharacters(content));
+		setDraftCharCount(content.length);
 		onContentChange?.(content, serializedEditorState, hasRefs);
 	};
 
@@ -917,8 +954,39 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		hasModelOptions &&
 		hasSendableContent &&
 		!hasActiveUploads;
+	const BTW_PREFIX_RE = /^\/btw\b\s*(.*)$/is;
+	const handleSideQuery = (question: string) => {
+		if (!chatId) {
+			return;
+		}
+		setBtwPending(true);
+		setBtwError(null);
+		void API.experimental
+			.sideQuery(chatId, { question })
+			.then((result) => {
+				setBtwResult(result);
+			})
+			.catch((err: unknown) => {
+				setBtwError(getErrorMessage(err, "Failed to get chat status."));
+			})
+			.finally(() => {
+				setBtwPending(false);
+			});
+	};
+	const handleDismissBtw = () => {
+		setBtwResult(null);
+		setBtwError(null);
+	};
 	const handleSubmit = () => {
 		const text = internalRef.current?.getValue()?.trim() ?? "";
+
+		const btwMatch = BTW_PREFIX_RE.exec(text);
+		if (btwMatch && chatId) {
+			handleSideQuery(btwMatch[1] ?? "");
+			internalRef.current?.clear();
+			resetPromptCycle();
+			return;
+		}
 
 		// If the input is empty and there are queued messages,
 		// promote the first one instead of submitting.
@@ -1128,6 +1196,43 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							unsupportedProviderNames={unsupportedProviderNames}
 							aiGatewayDisabled={aiGatewayDisabled}
 						/>
+					)}
+				</div>
+			)}
+			{(btwResult || btwPending || btwError) && (
+				<div
+					data-testid="btw-panel"
+					className="relative z-10 mb-2 rounded-xl border border-border-default bg-surface-secondary/70 px-3 py-2 text-xs text-content-secondary"
+				>
+					<div className="flex items-start justify-between gap-2">
+						<div className="flex items-center gap-1.5 font-medium text-content-primary">
+							<MessageCircleQuestionIcon className="size-3.5" />
+							Ask without interrupting
+						</div>
+						<Button
+							type="button"
+							variant="subtle"
+							size="icon"
+							aria-label="Dismiss"
+							onClick={handleDismissBtw}
+							className="size-5 rounded text-content-secondary hover:text-content-primary"
+						>
+							<XIcon className="size-3" />
+						</Button>
+					</div>
+					{btwPending && (
+						<div className="mt-1 flex items-center gap-1.5">
+							<Spinner size="sm" loading aria-hidden="true" />
+							Checking\u2026
+						</div>
+					)}
+					{btwError && !btwPending && (
+						<p className="mt-1 text-content-destructive">{btwError}</p>
+					)}
+					{btwResult && !btwPending && !btwError && (
+						<p className="mt-1 whitespace-pre-line text-content-primary">
+							{btwResult.answer}
+						</p>
 					)}
 				</div>
 			)}
@@ -1622,7 +1727,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 						</div>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
-						{speech.isSupported && !isStreaming && (
+						{speech.isSupported && (
 							<>
 								<Button
 									type="button"
@@ -1670,14 +1775,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							<div
 								className={cn(
 									"flex",
-									speech.isSupported &&
-										!isStreaming &&
-										!speech.error &&
-										"-ml-2",
+									speech.isSupported && !speech.error && "-ml-2",
 								)}
 							>
 								<ContextUsageIndicator
-									usage={contextUsage}
+									usage={
+										contextEstimate
+											? {
+													...(contextUsage ?? {}),
+													usedTokens: contextEstimate.usedTokens,
+													contextLimitTokens: contextEstimate.limitTokens,
+													isEstimated: contextEstimate.isEstimated,
+												}
+											: contextUsage
+									}
 									onRefreshContext={onRefreshContext}
 									isRefreshingContext={isRefreshingContext}
 								/>
@@ -1710,10 +1821,31 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								Interrupting. Waiting for the agent to stop.
 							</span>
 						)}
-						{/* Streaming hides voice/recording controls above but never
-						hides submission itself: a turn already running still
-						accepts a new prompt, it just joins the queue instead of
-						starting immediately, so this button stays alongside Stop. */}
+						{isStreaming && chatId && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										size="icon"
+										variant="subtle"
+										className="size-7 rounded-full transition-colors [&>svg]:!size-3 [&>svg]:p-0"
+										onClick={() => handleSideQuery("")}
+										disabled={btwPending}
+									>
+										{btwPending ? (
+											<Spinner size="sm" loading aria-hidden="true" />
+										) : (
+											<MessageCircleQuestionIcon />
+										)}
+										<span className="sr-only">Ask without interrupting</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="top">Ask without interrupting</TooltipContent>
+							</Tooltip>
+						)}
+						{/* Voice input (above) and submission (below) both stay available
+							while streaming: a turn already running still accepts a new
+							prompt -- recorded or typed -- it just joins the queue instead
+							of starting immediately, so this button stays alongside Stop. */}
 						{(!isStreaming || isQueueingSubmission) && (
 							<Tooltip>
 								<TooltipTrigger asChild>
