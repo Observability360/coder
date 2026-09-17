@@ -1787,6 +1787,10 @@ FROM chats_expanded;
 --   3. Waiting chats with a non-empty queue and stale updated_at
 --      (deferred-promote stranding when the worker dies before its
 --      post-cancel cleanup runs).
+--   4. Interrupting chats whose updated_at went stale: the interrupt
+--      can only complete on the owning worker, so a worker that dies
+--      mid-interrupt (e.g. a coderd restart) orphans the chat forever
+--      (production incident 2026-09-17).
 SELECT
     *
 FROM
@@ -1801,7 +1805,9 @@ WHERE
         AND EXISTS (
             SELECT 1 FROM chat_queued_messages cqm
             WHERE cqm.chat_id = chats_expanded.id
-        ));
+        ))
+    OR (status = 'interrupting'::chat_status
+        AND updated_at < @stale_threshold::timestamptz);
 
 -- name: UpdateChatHeartbeats :many
 -- Bumps the heartbeat timestamp for the given set of chat IDs,

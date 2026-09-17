@@ -3211,6 +3211,11 @@ func (p *Server) Start() *Server {
 			p.logger.Error(p.ctx, "failed to start chat worker", slog.Error(err))
 		}
 	}
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.runStaleChatReaper(p.ctx)
+	}()
 	return p
 }
 

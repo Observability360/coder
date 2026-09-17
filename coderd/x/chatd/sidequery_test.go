@@ -43,7 +43,7 @@ func TestSideQuery_LeavesGenerationAttemptAndWorkerUnchanged(t *testing.T) {
 	require.Equal(t, int64(1), before.GenerationAttempt)
 	require.True(t, before.WorkerID.Valid)
 
-	_, err = server.SideQuery(ctx, chat.ID, "")
+	_, err = server.SideQuery(ctx, chat.ID, "", "")
 	require.NoError(t, err)
 
 	after, err := f.db.GetChatByID(ctx, chat.ID)
@@ -65,7 +65,7 @@ func TestSideQuery_LeavesChatStatusUnchanged(t *testing.T) {
 	require.Equal(t, database.ChatStatusRunning, chat.Status)
 
 	ctx := testutil.Context(t, testutil.WaitShort)
-	_, err := server.SideQuery(ctx, chat.ID, "what are you doing right now and why?")
+	_, err := server.SideQuery(ctx, chat.ID, "what are you doing right now and why?", "")
 	require.NoError(t, err)
 
 	after, err := f.db.GetChatByID(ctx, chat.ID)
@@ -103,7 +103,7 @@ func TestSideQuery_LeavesQueuedMessagesUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, beforeMessages, 1)
 
-	result, err := server.SideQuery(ctx, chat.ID, "")
+	result, err := server.SideQuery(ctx, chat.ID, "", "")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), result.Snapshot.QueuedCount, "snapshot should reflect the queued message it read")
 
@@ -134,7 +134,7 @@ func TestSideQuery_ReflectsSubagentsWithoutMutatingThem(t *testing.T) {
 	beforeDone, err := f.db.GetChatByID(ctx, doneChild.ID)
 	require.NoError(t, err)
 
-	result, err := server.SideQuery(ctx, parent.ID, "")
+	result, err := server.SideQuery(ctx, parent.ID, "", "")
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Snapshot.SubagentsRunning)
 	require.Equal(t, 1, result.Snapshot.SubagentsDone)
@@ -158,7 +158,7 @@ func TestSideQuery_FailsOpenToSnapshotOnLLMError(t *testing.T) {
 	chat := f.createRunningChat(t)
 
 	ctx := testutil.Context(t, testutil.WaitShort)
-	result, err := server.SideQuery(ctx, chat.ID, "please explain in detail what you have accomplished so far")
+	result, err := server.SideQuery(ctx, chat.ID, "please explain in detail what you have accomplished so far", "")
 	require.NoError(t, err, "a side-channel LLM failure must never surface as an error")
 	require.Equal(t, "snapshot", result.Source, "must fall back to the structured snapshot when the LLM call fails")
 	require.Equal(t, result.Snapshot.FormatText(), result.Answer)
@@ -192,7 +192,7 @@ func TestSideQuery_PerformsNoWritesToChatRow(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, before.RetryState.Valid)
 
-	_, err = server.SideQuery(ctx, chat.ID, "what's the status?")
+	_, err = server.SideQuery(ctx, chat.ID, "what's the status?", "")
 	require.NoError(t, err)
 
 	after, err := f.db.GetChatByID(ctx, chat.ID)
