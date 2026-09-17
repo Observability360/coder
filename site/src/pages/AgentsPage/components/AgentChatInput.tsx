@@ -12,6 +12,7 @@ import {
 	PlusIcon,
 	ServerIcon,
 	SquareIcon,
+	SquareSlashIcon,
 	UnlinkIcon,
 	XIcon,
 } from "lucide-react";
@@ -439,6 +440,19 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 				(providerCount === 0 || modelCount === 0)
 			: modelCount !== undefined && modelCount === 0);
 	const internalRef = useRef<ChatMessageInputRef>(null);
+
+	// Toolbar entry point for the "/" skills menu: inserting the slash
+	// through the editor lets SkillsTriggerPlugin open the same menu the
+	// typed trigger uses, so search/keyboard/selection behave identically.
+	const handleSkillsMenuButton = () => {
+		const input = internalRef.current;
+		if (!input) return;
+		input.focus();
+		const value = input.getValue();
+		if (value.endsWith("/")) return;
+		const needsSpace = value.length > 0 && !/\s$/.test(value);
+		input.insertText(needsSpace ? " /" : "/");
+	};
 	const [previewImage, setPreviewImage] = useState<string | null>(null);
 	const [previewText, setPreviewText] = useState<string | null>(null);
 	const [previewTextFileName, setPreviewTextFileName] = useState<string | null>(
@@ -1725,6 +1739,18 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								</PopoverContent>
 							</Popover>
 						</div>
+						<Button
+							type="button"
+							variant="subtle"
+							size="icon"
+							className="size-7 shrink-0 rounded-full [&>svg]:!size-icon-sm [&>svg]:p-0"
+							onClick={handleSkillsMenuButton}
+							disabled={isDisabled || isLoading}
+							aria-label="Skills and commands"
+							title="Skills and commands (/)"
+						>
+							<SquareSlashIcon strokeWidth={1.5} />
+						</Button>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">
 						{speech.isSupported && (
