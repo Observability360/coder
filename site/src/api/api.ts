@@ -3516,6 +3516,21 @@ class ExperimentalApiMethods {
 	};
 
 	/**
+	 * Asks a running chat what it is currently doing without interrupting
+	 * it ("BTW"). Never appears in the chat's own transcript.
+	 */
+	sideQuery = async (
+		chatId: string,
+		req: TypesGen.ChatSideQueryRequest,
+	): Promise<TypesGen.ChatSideQueryResponse> => {
+		const response = await this.axios.post<TypesGen.ChatSideQueryResponse>(
+			`/api/v2/chats/${chatId}/side-query`,
+			req,
+		);
+		return response.data;
+	};
+
+	/**
 	 * Requests a manual context compaction on an idle or errored chat,
 	 * clearing any stored error. The compaction runs asynchronously
 	 * through the chat worker and bypasses the automatic usage threshold.

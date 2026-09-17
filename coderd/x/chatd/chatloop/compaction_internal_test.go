@@ -21,6 +21,26 @@ import (
 	"github.com/coder/quartz"
 )
 
+// streamTextFn returns a StreamFn that emits text as one streamed
+// block, mirroring what providers produce for a plain text response.
+// hook (optional) observes the call context before streaming begins.
+func streamTextFn(hook func(ctx context.Context), text string) func(context.Context, fantasy.Call) (fantasy.StreamResponse, error) {
+	return func(ctx context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
+		if hook != nil {
+			hook(ctx)
+		}
+		return func(yield func(fantasy.StreamPart) bool) {
+			if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextStart, ID: "t1"}) {
+				return
+			}
+			if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "t1", Delta: text}) {
+				return
+			}
+			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextEnd, ID: "t1"})
+		}, nil
+	}
+}
+
 func TestStartCompactionDebugRun_DoesNotReportDebugErrors(t *testing.T) {
 	t.Parallel()
 
@@ -199,7 +219,7 @@ func TestGenerateCompactionSummary_PanicFinalizesAsError(t *testing.T) {
 
 	model := &chattest.FakeModel{
 		ProviderName: "fake",
-		GenerateFn: func(_ context.Context, _ fantasy.Call) (*fantasy.Response, error) {
+		StreamFn: func(_ context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
 			panic("compaction model crash")
 		},
 	}
@@ -242,14 +262,9 @@ func TestGenerateCompactionSummary_UsesCallerContext(t *testing.T) {
 	var ctxSeen context.Context
 	model := &chattest.FakeModel{
 		ProviderName: "fake",
-		GenerateFn: func(ctx context.Context, _ fantasy.Call) (*fantasy.Response, error) {
+		StreamFn: streamTextFn(func(ctx context.Context) {
 			ctxSeen = ctx
-			return &fantasy.Response{
-				Content: []fantasy.Content{
-					fantasy.TextContent{Text: "summary"},
-				},
-			}, nil
-		},
+		}, "summary"),
 	}
 
 	summary, err := generateCompactionSummary(testCtx, model,
@@ -277,14 +292,9 @@ func TestGenerateCompaction_ForceBypassesThresholdGates(t *testing.T) {
 		return &chattest.FakeModel{
 			ProviderName: "fake",
 			ModelName:    "fake-model",
-			GenerateFn: func(_ context.Context, _ fantasy.Call) (*fantasy.Response, error) {
+			StreamFn: streamTextFn(func(_ context.Context) {
 				*calls++
-				return &fantasy.Response{
-					Content: []fantasy.Content{
-						fantasy.TextContent{Text: "forced summary"},
-					},
-				}, nil
-			},
+			}, "forced summary"),
 		}
 	}
 	messages := []fantasy.Message{textMessage(fantasy.MessageRoleUser, "hello")}
@@ -353,13 +363,7 @@ func TestGenerateCompaction_DefaultSourceAutomatic(t *testing.T) {
 	model := &chattest.FakeModel{
 		ProviderName: "fake",
 		ModelName:    "fake-model",
-		GenerateFn: func(_ context.Context, _ fantasy.Call) (*fantasy.Response, error) {
-			return &fantasy.Response{
-				Content: []fantasy.Content{
-					fantasy.TextContent{Text: "auto summary"},
-				},
-			}, nil
-		},
+		StreamFn:     streamTextFn(nil, "auto summary"),
 	}
 	result, err := GenerateCompaction(context.Background(), GenerateCompactionOptions{
 		Model:            model,

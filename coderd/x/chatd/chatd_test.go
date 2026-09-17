@@ -5156,14 +5156,10 @@ func highUsageTextResponse(text string) chattest.AnthropicResponse {
 }
 
 func anthropicCompactionResponse(text string) chattest.AnthropicResponse {
-	return chattest.AnthropicResponse{Response: &chattest.AnthropicMessage{
-		ID:         "msg-compaction",
-		Type:       "message",
-		Role:       "assistant",
-		Content:    text,
-		Model:      "claude-3-opus-20240229",
-		StopReason: "end_turn",
-	}}
+	// Compaction summaries stream (see generateCompactionSummary): a
+	// non-streaming summary over a large context holds the connection
+	// silent long enough for intermediate gateways to 504 it.
+	return chattest.AnthropicStreamingResponse(chattest.AnthropicTextChunks(text)...)
 }
 
 func highUsageReadFileResponse(path string) chattest.AnthropicResponse {
@@ -5194,10 +5190,10 @@ func TestActiveServer_RoutingPreservesAPIKeyAfterCompaction(t *testing.T) {
 	var streamCount atomic.Int32
 	anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 		body := anthropicRequestBody(t, *req)
+		if strings.Contains(body, "You are performing a context compaction") {
+			return anthropicCompactionResponse(compactionSummary)
+		}
 		if !req.Stream {
-			if strings.Contains(body, "You are performing a context compaction") {
-				return chattest.AnthropicNonStreamingResponse(compactionSummary)
-			}
 			return chattest.AnthropicNonStreamingResponse("AI Gateway Compaction")
 		}
 
@@ -5319,10 +5315,10 @@ func TestActiveServer_CompactionRecordsMetric(t *testing.T) {
 	var streamCount atomic.Int32
 	anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 		body := anthropicRequestBody(t, *req)
+		if strings.Contains(body, "You are performing a context compaction") {
+			return anthropicCompactionResponse(compactionSummary)
+		}
 		if !req.Stream {
-			if strings.Contains(body, "You are performing a context compaction") {
-				return anthropicCompactionResponse(compactionSummary)
-			}
 			return chattest.AnthropicNonStreamingResponse("title")
 		}
 		switch streamCount.Add(1) {
@@ -5411,12 +5407,15 @@ func TestActiveServer_Compaction(t *testing.T) {
 		anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 			requests.record(req)
 			body := anthropicRequestBody(t, *req)
+			if strings.Contains(body, "You are performing a context compaction") {
+				// The summarization input is bounded to the model context
+				// window (boundCompactionInput), so with this test tiny
+				// context limit the middle of the history is omitted.
+				// Content asserts on the compaction body live in the
+				// chatloop bounding unit tests instead.
+				return anthropicCompactionResponse(compactionSummary)
+			}
 			if !req.Stream {
-				if strings.Contains(body, "You are performing a context compaction") {
-					require.Contains(t, body, "read_file")
-					require.Contains(t, body, "package main")
-					return anthropicCompactionResponse(compactionSummary)
-				}
 				return chattest.AnthropicNonStreamingResponse("title")
 			}
 			switch streamCount.Add(1) {
@@ -5542,10 +5541,10 @@ func TestActiveServer_Compaction(t *testing.T) {
 		var streamCount atomic.Int32
 		anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 			body := anthropicRequestBody(t, *req)
+			if strings.Contains(body, "You are performing a context compaction") {
+				return anthropicCompactionResponse(compactionSummary)
+			}
 			if !req.Stream {
-				if strings.Contains(body, "You are performing a context compaction") {
-					return anthropicCompactionResponse(compactionSummary)
-				}
 				return chattest.AnthropicNonStreamingResponse("title")
 			}
 			switch streamCount.Add(1) {
@@ -5644,12 +5643,12 @@ func TestActiveServer_ManualCompaction(t *testing.T) {
 		var compactionRequests atomic.Int32
 		anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 			body := anthropicRequestBody(t, *req)
+			if strings.Contains(body, "You are performing a context compaction") {
+				compactionRequests.Add(1)
+				require.Contains(t, body, "hello from the user")
+				return anthropicCompactionResponse(compactionSummary)
+			}
 			if !req.Stream {
-				if strings.Contains(body, "You are performing a context compaction") {
-					compactionRequests.Add(1)
-					require.Contains(t, body, "hello from the user")
-					return anthropicCompactionResponse(compactionSummary)
-				}
 				return chattest.AnthropicNonStreamingResponse("title")
 			}
 			streamCount.Add(1)
@@ -5735,11 +5734,11 @@ func TestActiveServer_ManualCompaction(t *testing.T) {
 		var compactionRequests atomic.Int32
 		anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 			body := anthropicRequestBody(t, *req)
+			if strings.Contains(body, "You are performing a context compaction") {
+				compactionRequests.Add(1)
+				return anthropicCompactionResponse(compactionSummary)
+			}
 			if !req.Stream {
-				if strings.Contains(body, "You are performing a context compaction") {
-					compactionRequests.Add(1)
-					return anthropicCompactionResponse(compactionSummary)
-				}
 				return chattest.AnthropicNonStreamingResponse("title")
 			}
 			return chattest.AnthropicStreamingResponse(chattest.AnthropicTextChunks("assistant answer")...)
@@ -5973,12 +5972,12 @@ func TestActiveServer_CompactionModelOverride(t *testing.T) {
 			var streamCount atomic.Int32
 			anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 				body := anthropicRequestBody(t, *req)
+				if strings.Contains(body, "You are performing a context compaction") {
+					require.Equal(t, tc.overrideModel, req.Model)
+					tc.assertSummaryRequest(t, req)
+					return anthropicCompactionResponse(compactionSummary)
+				}
 				if !req.Stream {
-					if strings.Contains(body, "You are performing a context compaction") {
-						require.Equal(t, tc.overrideModel, req.Model)
-						tc.assertSummaryRequest(t, req)
-						return anthropicCompactionResponse(compactionSummary)
-					}
 					return chattest.AnthropicNonStreamingResponse("title")
 				}
 				require.Equal(t, chatModelName, req.Model)
@@ -6082,11 +6081,11 @@ func TestActiveServer_CompactionModelOverride(t *testing.T) {
 		var streamCount atomic.Int32
 		anthropicURL := chattest.NewAnthropic(t, func(req *chattest.AnthropicRequest) chattest.AnthropicResponse {
 			body := anthropicRequestBody(t, *req)
+			if strings.Contains(body, "You are performing a context compaction") {
+				require.Equal(t, overrideModelName, req.Model)
+				return anthropicCompactionResponse(compactionSummary)
+			}
 			if !req.Stream {
-				if strings.Contains(body, "You are performing a context compaction") {
-					require.Equal(t, overrideModelName, req.Model)
-					return anthropicCompactionResponse(compactionSummary)
-				}
 				return chattest.AnthropicNonStreamingResponse("title")
 			}
 			switch streamCount.Add(1) {

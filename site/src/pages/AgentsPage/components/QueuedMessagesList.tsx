@@ -166,13 +166,29 @@ export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
 				return (
 					<div
 						key={item.id}
-						className="my-1 opacity-40 transition-opacity hover:opacity-80"
+						className="my-1 opacity-60 transition-opacity hover:opacity-100"
 						onMouseEnter={() => setHoveredID(item.id)}
 						onMouseLeave={() =>
 							setHoveredID((current) => (current === item.id ? null : current))
 						}
 					>
 						<div className="flex items-center gap-2 rounded-lg border border-solid border-border-default bg-surface-secondary px-3 py-2 font-sans text-sm leading-relaxed text-content-primary shadow-sm">
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span
+										className="shrink-0 rounded-full bg-surface-tertiary px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-content-secondary"
+										aria-hidden="true"
+									>
+										Queued
+									</span>
+								</TooltipTrigger>
+								<TooltipContent side="top">
+									Will be sent when the current turn finishes
+								</TooltipContent>
+							</Tooltip>
+							<span className="sr-only">
+								Queued message, will be sent when the current turn finishes:
+							</span>
 							<span className="min-w-0 flex-1 truncate">
 								{item.displayText.split("\n")[0]}
 								{item.displayText.includes("\n") ? "…" : ""}

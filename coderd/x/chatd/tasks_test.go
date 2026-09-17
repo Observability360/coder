@@ -1066,6 +1066,7 @@ func TestGenerationTask_RecordRetryState(t *testing.T) {
 			Retryable:  true,
 			StatusCode: 429,
 		},
+		int64(chatretry.MaxAttempts),
 	)
 	require.NoError(t, err)
 	require.True(t, decision.retry)
@@ -1135,6 +1136,7 @@ func TestGenerationTask_RecordRetryStateUsesDurableGenerationAttempt(t *testing.
 			Provider:  "openai",
 			Retryable: true,
 		},
+		int64(chatretry.MaxAttempts),
 	)
 	require.NoError(t, err)
 	require.True(t, decision.retry)
@@ -1181,6 +1183,7 @@ func TestGenerationTask_RecordRetryStateClearedByNextAttempt(t *testing.T) {
 			Provider:  "openai",
 			Retryable: true,
 		},
+		int64(chatretry.MaxAttempts),
 	)
 	require.NoError(t, err)
 	withRetry, err := f.db.GetChatByID(testutil.Context(t, testutil.WaitShort), chat.ID)
@@ -1242,6 +1245,7 @@ func TestGenerationTask_RecordRetryStateStaleFenceExits(t *testing.T) {
 			Provider:  "openai",
 			Retryable: true,
 		},
+		int64(chatretry.MaxAttempts),
 	)
 	require.ErrorIs(t, err, errTaskExpectedExit)
 	latest, err := f.db.GetChatByID(testutil.Context(t, testutil.WaitShort), chat.ID)

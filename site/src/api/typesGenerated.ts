@@ -331,6 +331,7 @@ export interface AIConfig {
 	readonly bridge?: AIBridgeConfig;
 	readonly aibridge_proxy?: AIBridgeProxyConfig;
 	readonly chat?: ChatConfig;
+	readonly transcription?: TranscriptionConfig;
 }
 
 // From codersdk/aigatewaykeys.go
@@ -1616,6 +1617,38 @@ export interface AssignableRoles extends Role {
 	readonly built_in: boolean;
 }
 
+// From codersdk/repositorycatalog.go
+/**
+ * AttachRepositoryWorkspaceRequest is the body for
+ * POST /api/v2/repository-catalog/attach.
+ */
+export interface AttachRepositoryWorkspaceRequest {
+	readonly owner: string;
+	readonly repo: string;
+}
+
+// From codersdk/repositorycatalog.go
+/**
+ * AttachRepositoryWorkspaceResponse is returned by
+ * POST /api/v2/repository-catalog/attach.
+ */
+export interface AttachRepositoryWorkspaceResponse {
+	readonly workspace: Workspace;
+	/**
+	 * Created is true when this call provisioned a brand new workspace;
+	 * false when an existing owned workspace for this repository was reused.
+	 */
+	readonly created: boolean;
+}
+
+// From codersdk/audiotranscription.go
+/**
+ * AudioTranscriptionResponse is returned by POST /api/v2/audio-transcriptions.
+ */
+export interface AudioTranscriptionResponse {
+	readonly text: string;
+}
+
 // From codersdk/audit.go
 export type AuditAction =
 	| "close"
@@ -2841,6 +2874,14 @@ export interface ChatModel {
 	readonly enabled: boolean;
 	readonly is_default: boolean;
 	readonly context_limit: number;
+	/**
+	 * EffectiveContextLimit overrides ContextLimit for combo/route-backed
+	 * models whose real capacity (the largest currently-eligible target)
+	 * exceeds the smallest/first target ContextLimit reflects. Sourced
+	 * from the upstream provider (e.g. OmniRoute's own model catalog),
+	 * never hardcoded here. Absent means "use ContextLimit".
+	 */
+	readonly effective_context_limit?: number;
 	readonly compression_threshold: number;
 	readonly model_config?: ChatModelCallConfig;
 	/**
@@ -3358,6 +3399,52 @@ export interface ChatRetentionDaysResponse {
 export type ChatRole = "" | "read";
 
 export const ChatRoles: ChatRole[] = ["", "read"];
+
+// From codersdk/chats.go
+/**
+ * ChatSideQueryRequest is the request for POST /api/v2/chats/{chat}/side-query
+ * ("BTW" -- ask a running chat what it's doing without interrupting it).
+ */
+export interface ChatSideQueryRequest {
+	/**
+	 * Question is free text, e.g. "what are you doing right now?". An empty
+	 * question requests a plain status summary.
+	 */
+	readonly question: string;
+}
+
+// From codersdk/chats.go
+/**
+ * ChatSideQueryResponse is the response from a BTW side-query. It is never
+ * added to the chat's own message history.
+ */
+export interface ChatSideQueryResponse {
+	readonly answer: string;
+	/**
+	 * Source is "snapshot" when Answer came directly from the structured
+	 * snapshot, or "llm" when an isolated interpretive model call produced
+	 * it.
+	 */
+	readonly source: string;
+	readonly snapshot: ChatSideQuerySnapshot;
+}
+
+// From codersdk/chats.go
+/**
+ * ChatSideQuerySnapshot is the read-only snapshot of a chat's current
+ * activity a side-query answer is grounded in.
+ */
+export interface ChatSideQuerySnapshot {
+	readonly status: ChatStatus;
+	readonly is_running: boolean;
+	readonly running_for_seconds?: number;
+	readonly current_activity?: string;
+	readonly subagents_running: number;
+	readonly subagents_completed: number;
+	readonly queued_count: number;
+	readonly is_retrying: boolean;
+	readonly generation_attempt: number;
+}
 
 // From codersdk/chats.go
 export interface ChatSkillPart {
@@ -4846,6 +4933,7 @@ export interface DeploymentValues {
 	readonly workspace_prebuilds?: PrebuildsConfig;
 	readonly enable_ai_tasks?: boolean;
 	readonly ai?: AIConfig;
+	readonly repository_catalog?: RepositoryCatalogConfig;
 	readonly stats_collection?: StatsCollectionConfig;
 	readonly template_builder?: TemplateBuilderConfig;
 	readonly config?: string;
@@ -8114,6 +8202,70 @@ export interface Replica {
 	readonly database_latency: number;
 }
 
+// From codersdk/repositorycatalog.go
+/**
+ * Repository is a GitHub repository in the configured organization,
+ * returned by GET /api/v2/repository-catalog/repositories.
+ */
+export interface Repository {
+	readonly id: number;
+	readonly owner: string;
+	readonly name: string;
+	readonly full_name: string;
+	readonly private: boolean;
+	readonly default_branch: string;
+	/**
+	 * CloneURL is the SSH clone URL (git@github.com:owner/repo.git), matching
+	 * the format already stored in the docker-git template's git_repo
+	 * parameter for every existing repository workspace.
+	 */
+	readonly clone_url: string;
+	readonly html_url: string;
+	/**
+	 * WorkspaceID is set when the requesting user already owns a workspace
+	 * associated with this repository (nil otherwise). The frontend renders
+	 * "Ready" vs "Not created" from its presence, and "Attached" by comparing
+	 * it against the chat's currently attached workspace — a client-only bit
+	 * this field is not involved in.
+	 */
+	readonly workspace_id?: string;
+}
+
+// From codersdk/deployment.go
+/**
+ * RepositoryCatalogConfig backs the repository-driven "Attach workspace"
+ * picker: GET /api/v2/repository-catalog/repositories lists the configured
+ * GitHub organization's accessible, non-archived repositories, and
+ * POST /api/v2/repository-catalog/attach lazily finds-or-creates a workspace
+ * for one of them using the configured template + git-clone parameter.
+ * Disabled (both endpoints 404) unless GitHubOrg and GitHubToken are set.
+ */
+export interface RepositoryCatalogConfig {
+	readonly github_org: string;
+	readonly github_token: string;
+	/**
+	 * TemplateName selects the template used to lazily create a repository
+	 * workspace (matched by name, active version used). Defaults to the
+	 * existing "docker-git" template already used for every manually created
+	 * per-repository workspace in production.
+	 */
+	readonly template_name: string;
+	/**
+	 * GitRepoParameterName is the template's rich parameter that receives the
+	 * repository's SSH clone URL. Defaults to "git_repo", the parameter name
+	 * the docker-git template already defines.
+	 */
+	readonly git_repo_parameter_name: string;
+}
+
+// From codersdk/repositorycatalog.go
+/**
+ * RepositoryCatalogResponse is returned by GET /api/v2/repository-catalog/repositories.
+ */
+export interface RepositoryCatalogResponse {
+	readonly repositories: readonly Repository[];
+}
+
 // From codersdk/users.go
 /**
  * RequestOneTimePasscodeRequest enables callers to request a one-time-passcode to change their password.
@@ -9682,6 +9834,24 @@ export interface TraceConfig {
 	readonly honeycomb_api_key: string;
 	readonly capture_logs: boolean;
 	readonly data_dog: boolean;
+}
+
+// From codersdk/deployment.go
+/**
+ * TranscriptionConfig proxies POST /api/v2/audio-transcriptions to a single
+ * OpenAI-Whisper-compatible upstream (e.g. an OmniRoute deployment's
+ * /v1/audio/transcriptions). The upstream API key is held server-side only —
+ * coderd is the only party that ever sees it; the browser talks to coderd's
+ * own session-authenticated endpoint and never touches the upstream
+ * credential. Disabled (transcription endpoint returns 404) unless both URL
+ * and APIKey are set.
+ */
+export interface TranscriptionConfig {
+	readonly url: string;
+	readonly api_key: string;
+	readonly model: string;
+	readonly language: string;
+	readonly timeout: number;
 }
 
 // From codersdk/templates.go

@@ -2742,6 +2742,77 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 	httpapi.Write(ctx, rw, http.StatusOK, response)
 }
 
+// postChatSideQuery handles POST /api/v2/chats/{chat}/side-query -- "BTW",
+// a read-only question about a chat's current activity that never
+// interrupts it, never queues a message, and never appears in the chat's
+// own transcript. See chatd.SideQuery for the isolation contract.
+func (api *API) postChatSideQuery(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	apiKey := httpmw.APIKey(r)
+	chat := httpmw.ChatParam(r)
+	chatID := chat.ID
+
+	if !api.requireChatDaemon(ctx, rw) {
+		return
+	}
+
+	// Same authz shape as postChatMessages: a side-query can trigger an
+	// isolated LLM call, which forwards the owner's provider credentials.
+	if !api.Authorize(r, policy.ActionUpdate, chat.RBACObject()) {
+		httpapi.ResourceNotFound(rw)
+		return
+	}
+
+	if apiKey.UserID != chat.OwnerID {
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "Only the chat owner may query this chat.",
+		})
+		return
+	}
+
+	var req codersdk.ChatSideQueryRequest
+	if !httpapi.Read(ctx, rw, r, &req) {
+		return
+	}
+
+	result, err := api.chatDaemon.SideQuery(ctx, chatID, req.Question)
+	if err != nil {
+		if errors.Is(err, chatstate.ErrChatNotFound) {
+			httpapi.ResourceNotFound(rw)
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Failed to answer side query.",
+			Detail:  chaterror.FormatDiagnosticDetail(err),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, codersdk.ChatSideQueryResponse{
+		Answer:   result.Answer,
+		Source:   result.Source,
+		Snapshot: convertChatSideQuerySnapshot(result.Snapshot),
+	})
+}
+
+func convertChatSideQuerySnapshot(s chatd.SideQuerySnapshot) codersdk.ChatSideQuerySnapshot {
+	var runningForSeconds int64
+	if s.IsRunning {
+		runningForSeconds = int64(s.RunningFor.Seconds())
+	}
+	return codersdk.ChatSideQuerySnapshot{
+		Status:             codersdk.ChatStatus(s.Status),
+		IsRunning:          s.IsRunning,
+		RunningForSeconds:  runningForSeconds,
+		CurrentActivity:    s.CurrentActivity,
+		SubagentsRunning:   s.SubagentsRunning,
+		SubagentsCompleted: s.SubagentsDone,
+		QueuedCount:        s.QueuedCount,
+		IsRetrying:         s.IsRetrying,
+		GenerationAttempt:  s.GenerationAttempt,
+	}
+}
+
 // @Summary Edit chat message
 // @ID edit-chat-message
 // @Security CoderSessionToken
@@ -7830,20 +7901,26 @@ func convertChatModelConfig(config database.ChatModelConfig) codersdk.ChatModel 
 
 	// Active configs always carry a non-null ai_provider_id (CHECK
 	// chat_model_configs_ai_provider_required_when_active).
+	var effectiveContextLimit *int64
+	if config.EffectiveContextLimit.Valid {
+		effectiveContextLimit = &config.EffectiveContextLimit.Int64
+	}
+
 	return codersdk.ChatModel{
-		ID:                   config.ID,
-		OrganizationID:       config.OrganizationID,
-		AIProviderID:         config.AIProviderID.UUID,
-		Model:                config.Model,
-		DisplayName:          config.DisplayName,
-		Enabled:              config.Enabled,
-		IsDefault:            config.IsDefault,
-		ContextLimit:         config.ContextLimit,
-		CompressionThreshold: config.CompressionThreshold,
-		ModelConfig:          modelConfig,
-		ReasoningEfforts:     chatprovider.SelectableReasoningEfforts(reasoningEffortConfig),
-		CreatedAt:            config.CreatedAt,
-		UpdatedAt:            config.UpdatedAt,
+		ID:                    config.ID,
+		OrganizationID:        config.OrganizationID,
+		AIProviderID:          config.AIProviderID.UUID,
+		Model:                 config.Model,
+		DisplayName:           config.DisplayName,
+		Enabled:               config.Enabled,
+		IsDefault:             config.IsDefault,
+		ContextLimit:          config.ContextLimit,
+		EffectiveContextLimit: effectiveContextLimit,
+		CompressionThreshold:  config.CompressionThreshold,
+		ModelConfig:           modelConfig,
+		ReasoningEfforts:      chatprovider.SelectableReasoningEfforts(reasoningEffortConfig),
+		CreatedAt:             config.CreatedAt,
+		UpdatedAt:             config.UpdatedAt,
 	}
 }
 
