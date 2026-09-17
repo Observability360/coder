@@ -95,6 +95,12 @@ export function estimateContextUsage(
 	const { realUsage, limitTokens, compressionThresholdPercent, draftCharCount, queuedMessages } =
 		input;
 	if (!limitTokens || limitTokens <= 0) return undefined;
+	// No real usage and nothing typed or queued means there is no
+	// signal at all: report nothing rather than a fabricated
+	// "0% of the limit", which users read as a broken indicator.
+	if (!realUsage && draftCharCount === 0 && queuedMessageCharCount(queuedMessages) === 0) {
+		return undefined;
+	}
 
 	const baselineTokens =
 		realUsage && typeof realUsage.usedTokens === "number" ? realUsage.usedTokens : 0;

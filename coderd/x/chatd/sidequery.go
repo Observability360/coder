@@ -246,7 +246,11 @@ type SideQueryResult struct {
 // generation error, or the model declining) -- a side-channel failing
 // must never surface as an error to a caller who was only asking a
 // question, and must never affect the main chat.
-func (p *Server) SideQuery(ctx context.Context, chatID uuid.UUID, question string) (SideQueryResult, error) {
+// apiKeyID is the ID of the API key on the side-query HTTP request; the
+// AI-Gateway transport requires it for attribution, exactly as it does
+// for a normal turn (without it, gateway-routed models cannot serve the
+// interpretive path at all and every question degrades to the snapshot).
+func (p *Server) SideQuery(ctx context.Context, chatID uuid.UUID, question string, apiKeyID string) (SideQueryResult, error) {
 	snapshot, chat, err := p.BuildSideQuerySnapshot(ctx, chatID)
 	if err != nil {
 		return SideQueryResult{}, err
@@ -256,7 +260,7 @@ func (p *Server) SideQuery(ctx context.Context, chatID uuid.UUID, question strin
 		return SideQueryResult{Answer: snapshot.FormatText(), Source: "snapshot", Snapshot: snapshot}, nil
 	}
 
-	answer, ok := p.generateSideQueryAnswer(ctx, chat, snapshot, question)
+	answer, ok := p.generateSideQueryAnswer(ctx, chat, snapshot, question, apiKeyID)
 	if !ok {
 		// Fail-open is the contract, but a silent fallback made the LLM
 		// path undiagnosable in production; generateSideQueryAnswer logs
@@ -291,10 +295,12 @@ func (p *Server) generateSideQueryAnswer(
 	chat database.Chat,
 	snapshot SideQuerySnapshot,
 	question string,
+	apiKeyID string,
 ) (string, bool) {
 	resolved, err := p.resolveModelCall(ctx, modelCallSpec{
-		purpose: "btw-side-query",
-		chat:    chat,
+		purpose:      "btw-side-query",
+		chat:         chat,
+		buildOptions: modelBuildOptions{ActiveAPIKeyID: apiKeyID},
 	})
 	if err != nil {
 		p.logger.Warn(ctx, "btw side-query falling back to snapshot: model resolution failed",

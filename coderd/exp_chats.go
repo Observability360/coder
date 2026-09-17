@@ -2775,7 +2775,7 @@ func (api *API) postChatSideQuery(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := api.chatDaemon.SideQuery(ctx, chatID, req.Question)
+	result, err := api.chatDaemon.SideQuery(ctx, chatID, req.Question, apiKey.ID)
 	if err != nil {
 		if errors.Is(err, chatstate.ErrChatNotFound) {
 			httpapi.ResourceNotFound(rw)
