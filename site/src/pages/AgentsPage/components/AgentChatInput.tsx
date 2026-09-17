@@ -1223,7 +1223,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 					{btwPending && (
 						<div className="mt-1 flex items-center gap-1.5">
 							<Spinner size="sm" loading aria-hidden="true" />
-							Checking\u2026
+							Checking…
 						</div>
 					)}
 					{btwError && !btwPending && (

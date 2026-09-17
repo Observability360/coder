@@ -98,8 +98,10 @@ export function estimateContextUsage(
 	// No real usage and nothing typed or queued means there is no
 	// signal at all: report nothing rather than a fabricated
 	// "0% of the limit", which users read as a broken indicator.
+	const hasRealTokens =
+		typeof realUsage?.usedTokens === "number" && realUsage.usedTokens > 0;
 	if (
-		!realUsage &&
+		!hasRealTokens &&
 		draftCharCount === 0 &&
 		queuedMessages.every((m) => queuedMessageCharCount(m.content) === 0)
 	) {
