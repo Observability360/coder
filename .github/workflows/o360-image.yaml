@@ -30,7 +30,7 @@ jobs:
       - name: Set up mise tools
         uses: ./.github/actions/setup-mise
         with:
-          install-args: "go node pnpm"
+          install-args: "go node pnpm protoc protoc-gen-go go:storj.io/drpc/cmd/protoc-gen-go-drpc"
 
       - name: GHCR Login
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
