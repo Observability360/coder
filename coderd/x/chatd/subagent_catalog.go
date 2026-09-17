@@ -144,7 +144,11 @@ func allSubagentDefinitions() []subagentDefinition {
 					return `type "computer_use" is unavailable in plan mode`
 				}
 				if !p.experiments.Enabled(codersdk.ExperimentChatVirtualDesktop) {
-					return `type "computer_use" is unavailable because the chat-virtual-desktop experiment is not enabled`
+					return `type "computer_use" is unavailable (chat-virtual-desktop experiment disabled). ` +
+						`For browser work use the workspace interim standard instead: run ` +
+						"`o360-browser-open <service> <url>` for headless navigation with a persistent " +
+						"profile, and `o360-browser-login <service>` to hand the user an authenticated " +
+						`noVNC URL for human SSO/MFA. Do not build ad-hoc VNC/noVNC stacks.`
 				}
 				_, _, _, err := p.computerUseProviderAndModelFromConfig(ctx)
 				if err != nil {

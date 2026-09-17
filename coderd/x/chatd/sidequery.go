@@ -27,6 +27,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"cdr.dev/slog/v3"
+
 	"github.com/coder/coder/v2/coderd/database"
 )
 
@@ -131,6 +133,18 @@ func (p *Server) BuildSideQuerySnapshot(ctx context.Context, chatID uuid.UUID) (
 		return SideQuerySnapshot{}, database.Chat{}, fmt.Errorf("load recent messages: %w", err)
 	}
 	snapshot.CurrentActivity = currentActivityFromMessages(messages)
+	// chats.started_at is not reliably populated by every path into the
+	// running state (observed in production as "running for 0s"), so fall
+	// back to the newest user message: "how long since you asked" is the
+	// duration a human actually means.
+	if snapshot.IsRunning && snapshot.RunningFor == 0 {
+		for _, m := range messages {
+			if m.Role == database.ChatMessageRoleUser {
+				snapshot.RunningFor = time.Since(m.CreatedAt)
+				break
+			}
+		}
+	}
 
 	return snapshot, chat, nil
 }
@@ -244,6 +258,9 @@ func (p *Server) SideQuery(ctx context.Context, chatID uuid.UUID, question strin
 
 	answer, ok := p.generateSideQueryAnswer(ctx, chat, snapshot, question)
 	if !ok {
+		// Fail-open is the contract, but a silent fallback made the LLM
+		// path undiagnosable in production; generateSideQueryAnswer logs
+		// the specific failure before we degrade to the snapshot.
 		return SideQueryResult{Answer: snapshot.FormatText(), Source: "snapshot", Snapshot: snapshot}, nil
 	}
 	return SideQueryResult{Answer: answer, Source: "llm", Snapshot: snapshot}, nil
@@ -280,6 +297,8 @@ func (p *Server) generateSideQueryAnswer(
 		chat:    chat,
 	})
 	if err != nil {
+		p.logger.Warn(ctx, "btw side-query falling back to snapshot: model resolution failed",
+			slog.F("chat_id", chat.ID), slog.Error(err))
 		return "", false
 	}
 
@@ -297,6 +316,11 @@ func (p *Server) generateSideQueryAnswer(
 
 	result, err := generateQuickgenObject[sideQueryAnswerObject](ctx, resolved.model.LanguageModel(), call)
 	if err != nil || result == nil {
+		p.logger.Warn(ctx, "btw side-query falling back to snapshot: generation failed",
+			slog.F("chat_id", chat.ID),
+			slog.F("provider", resolved.resolvedProvider),
+			slog.F("model", resolved.resolvedModel),
+			slog.Error(err))
 		return "", false
 	}
 	answer := strings.TrimSpace(result.Object.Answer)
